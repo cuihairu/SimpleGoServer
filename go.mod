@@ -2,7 +2,6 @@ module github.com/cuihairu/simplegoserver
 
 go 1.22.3
 
-require golang.org/x/sys v0.21.0
 
 require (
 	github.com/fsnotify/fsnotify v1.7.0 // indirect
