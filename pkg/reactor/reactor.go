@@ -2,6 +2,7 @@ package reactor
 
 import (
 	"context"
+	handlerImpl "github.com/cuihairu/simplegoserver/internal/handler"
 	"github.com/cuihairu/simplegoserver/pkg/handler"
 	"github.com/cuihairu/simplegoserver/pkg/utils"
 	"net"
@@ -13,36 +14,35 @@ type SlaveRector struct {
 }
 
 type Reactor struct {
-	opts       Options
-	listener   net.Listener
-	workers    *WorkerGroup
-	cancelFunc context.CancelFunc
-	ctx        context.Context
-	graceful   *utils.Graceful
+	opts                Options
+	listener            net.Listener
+	workers             *WorkerGroup
+	cancelFunc          context.CancelFunc
+	ctx                 context.Context
+	graceful            *utils.Graceful
+	eventListener       handler.EventListener
+	pipelineInitializer handler.PipeInitializer
 }
 
-func NewReactor(opts Options) (*Reactor, error) {
-	if opts.eventListener == nil {
-		opts.eventListener = handler.NewErrorHandler()
-	}
-	if opts.initializer == nil {
-		opts.initializer = handler.WithDefaultPipeline
+func NewReactor(opts Options, eventListener handler.EventListener, pipelineInitializer handler.PipeInitializer, balancer Balancer) (*Reactor, error) {
+	if eventListener == nil {
+		eventListener = handlerImpl.NewErrorHandler()
 	}
 	parse, err := url.Parse(opts.Listener)
 	if err != nil {
-		opts.eventListener.OnError(err)
+		eventListener.OnError(err)
 		return nil, err
 	}
 	listener, err := net.Listen(parse.Scheme, parse.Host)
 	if err != nil {
-		opts.eventListener.OnError(err)
+		eventListener.OnError(err)
 		return nil, err
 	}
 	ctx, ctxCancel := context.WithCancel(context.Background())
-	balancer := NewLeastBalancer()
-	group, err := NewWorkerGroup(opts, ctx, balancer)
+
+	group, err := NewWorkerGroup(opts, ctx, eventListener, pipelineInitializer, balancer)
 	if err != nil {
-		opts.eventListener.OnError(err)
+		eventListener.OnError(err)
 		return nil, err
 	}
 	reactor := &Reactor{
@@ -62,11 +62,11 @@ func NewReactor(opts Options) (*Reactor, error) {
 }
 
 func (r *Reactor) Reload() {
-	r.opts.eventListener.OnReload()
+	r.eventListener.OnReload()
 }
 
 func (r *Reactor) Run() {
-	r.opts.eventListener.OnStartup()
+	r.eventListener.OnStartup()
 	r.workers.Start()
 	for {
 		select {
@@ -77,19 +77,19 @@ func (r *Reactor) Run() {
 		}
 		conn, err := r.listener.Accept()
 		if err != nil {
-			r.opts.eventListener.OnError(err)
+			r.eventListener.OnError(err)
 			continue
 		}
-		r.opts.eventListener.OnConnect(conn)
+		r.eventListener.OnConnect(conn)
 		err = r.workers.Dispatch(conn)
 		if err != nil {
-			r.opts.eventListener.OnError(err)
+			r.eventListener.OnError(err)
 		}
 	}
 }
 
 func (r *Reactor) Stop() {
-	r.opts.eventListener.OnShutdown()
+	r.eventListener.OnShutdown()
 	r.cancelFunc()
 	r.listener.Close()
 }

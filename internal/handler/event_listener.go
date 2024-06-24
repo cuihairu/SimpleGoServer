@@ -1,9 +1,15 @@
 package handler
 
 import (
+	"github.com/cuihairu/simplegoserver/pkg/handler"
 	"log"
 	"net"
-	"os"
+	"sync"
+)
+
+var (
+	onceErrorHandler     sync.Once
+	instanceErrorHandler *ErrorHandler
 )
 
 type ErrorHandler struct {
@@ -30,15 +36,16 @@ func (e ErrorHandler) OnConnect(conn net.Conn) {
 	e.logger.Printf("new connect :%s", conn.RemoteAddr())
 }
 
-func (e ErrorHandler) HandleException(ctx ExceptionContext, ex Exception) {
+func (e ErrorHandler) HandleException(ctx handler.ExceptionContext, ex handler.Exception) {
 	e.logger.Printf("handle exception :%s", ex)
 }
 
 func NewErrorHandler() *ErrorHandler {
-	return &ErrorHandler{
-		logger: log.New(os.Stderr, "--", log.LstdFlags),
-	}
+	onceErrorHandler.Do(func() {
+		instanceErrorHandler = &ErrorHandler{}
+	})
+	return instanceErrorHandler
 }
 
-var _ ExceptionHandler = (*ErrorHandler)(nil)
-var _ EventListener = (*ErrorHandler)(nil)
+var _ handler.ExceptionHandler = (*ErrorHandler)(nil)
+var _ handler.EventListener = (*ErrorHandler)(nil)

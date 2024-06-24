@@ -3,14 +3,28 @@ package handler
 import (
 	"bytes"
 	"fmt"
+	"github.com/cuihairu/simplegoserver/pkg/handler"
 	"github.com/cuihairu/simplegoserver/pkg/utils"
 	"io"
+	"sync"
+)
+
+var (
+	onceHeadHandler     sync.Once
+	instanceHeadHandler *HeadHandler
 )
 
 type HeadHandler struct {
 }
 
-func (h HeadHandler) HandleWrite(ctx OutboundContext, message Message) {
+func NewHeadHandler() *HeadHandler {
+	onceHeadHandler.Do(func() {
+		instanceHeadHandler = &HeadHandler{}
+	})
+	return instanceHeadHandler
+}
+
+func (h HeadHandler) HandleWrite(ctx handler.OutboundContext, message handler.Message) {
 	switch m := message.(type) {
 	case []byte:
 		utils.AssertWriteLength(ctx.Conn().Write(m))
@@ -31,4 +45,4 @@ func (h HeadHandler) HandleWrite(ctx OutboundContext, message Message) {
 	}
 }
 
-var _ OutboundHandler = (*HeadHandler)(nil)
+var _ handler.OutboundHandler = (*HeadHandler)(nil)

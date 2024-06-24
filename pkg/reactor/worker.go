@@ -2,6 +2,7 @@ package reactor
 
 import (
 	"context"
+	handlerImpl "github.com/cuihairu/simplegoserver/internal/handler"
 	"github.com/cuihairu/simplegoserver/pkg/handler"
 	"net"
 	"runtime"
@@ -10,36 +11,49 @@ import (
 )
 
 type Worker struct {
-	mutex sync.Mutex
-	ctx   context.Context
-	newCh chan net.Conn
-	count atomic.Int32
-	id    int
-	opts  Options
+	mutex               sync.Mutex
+	ctx                 context.Context
+	newCh               chan net.Conn
+	count               atomic.Int32
+	id                  int
+	opts                Options
+	pipelineInitializer handler.PipeInitializer
+	eventListener       handler.EventListener
 }
 
 type WorkerGroup struct {
-	balancer Balancer
-	opts     Options
+	balancer      Balancer
+	opts          Options
+	eventListener handler.EventListener
 }
 
-func NewWorkerGroup(opts Options, ctx context.Context, balancer Balancer) (*WorkerGroup, error) {
+func NewWorkerGroup(opts Options, ctx context.Context, eventListener handler.EventListener, pipelineInitializer handler.PipeInitializer, balancer Balancer) (*WorkerGroup, error) {
+	if eventListener == nil {
+		panic("eventListener must not be nil")
+	}
 	if opts.NumWorkers <= 0 || opts.NumWorkers > runtime.NumCPU() || opts.Multicore {
 		opts.NumWorkers = runtime.NumCPU()
 	}
+	if pipelineInitializer == nil {
+		pipelineInitializer = handlerImpl.WithDefaultPipeline
+	}
+	if balancer == nil {
+		balancer = NewLeastBalancer()
+	}
+
 	for i := 0; i < opts.NumWorkers; i++ {
-		worker, err := NewWorker(ctx, i)
+		worker, err := NewWorker(ctx, i, eventListener, pipelineInitializer)
 		if err != nil {
-			opts.eventListener.OnError(err)
+			eventListener.OnError(err)
 			return nil, err
 		}
 		err = balancer.Register(worker)
 		if err != nil {
-			opts.eventListener.OnError(err)
+			eventListener.OnError(err)
 			return nil, err
 		}
 	}
-	return &WorkerGroup{balancer: balancer}, nil
+	return &WorkerGroup{balancer: balancer, eventListener: eventListener}, nil
 }
 
 func (g *WorkerGroup) Start() {
@@ -58,11 +72,13 @@ func (g *WorkerGroup) Dispatch(conn net.Conn) error {
 	return nil
 }
 
-func NewWorker(ctx context.Context, id int) (*Worker, error) {
+func NewWorker(ctx context.Context, id int, eventListener handler.EventListener, pipelineInitializer handler.PipeInitializer) (*Worker, error) {
 	return &Worker{
-		ctx:   ctx,
-		newCh: make(chan net.Conn),
-		id:    id,
+		ctx:                 ctx,
+		newCh:               make(chan net.Conn),
+		id:                  id,
+		pipelineInitializer: pipelineInitializer,
+		eventListener:       eventListener,
 	}, nil
 }
 
@@ -89,7 +105,12 @@ func (w *Worker) Count() int {
 }
 
 func (w *Worker) handleConnection(conn net.Conn) {
-	pipeline := handler.NewPipeline(conn)
+	pipeline := handlerImpl.NewPipeline(conn)
+	err := w.pipelineInitializer(pipeline)
+	if err != nil {
+		w.eventListener.OnError(err)
+		panic(err)
+	}
 	w.count.Add(1)
 	defer func() {
 		pipeline.FireInactive(conn.Close())
