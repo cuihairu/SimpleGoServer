@@ -26,7 +26,7 @@ func runServer() {
 		Listener:   addr,
 		LockThread: viper.GetBool("server.lockThread"),
 	}
-	newReactor, err := reactor.NewReactor(options)
+	newReactor, err := reactor.NewReactor(options, nil, nil, nil)
 	if err != nil {
 		panic(err)
 	}

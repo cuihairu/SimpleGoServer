@@ -46,11 +46,12 @@ func NewReactor(opts Options, eventListener handler.EventListener, pipelineIniti
 		return nil, err
 	}
 	reactor := &Reactor{
-		opts:       opts,
-		listener:   listener,
-		workers:    group,
-		ctx:        ctx,
-		cancelFunc: ctxCancel,
+		opts:          opts,
+		listener:      listener,
+		workers:       group,
+		ctx:           ctx,
+		cancelFunc:    ctxCancel,
+		eventListener: eventListener,
 	}
 	reactor.graceful = utils.NewGraceful(func(signal os.Signal) {
 		reactor.Stop()

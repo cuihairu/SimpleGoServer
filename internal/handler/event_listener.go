@@ -4,6 +4,7 @@ import (
 	"github.com/cuihairu/simplegoserver/pkg/handler"
 	"log"
 	"net"
+	"os"
 	"sync"
 )
 
@@ -42,7 +43,9 @@ func (e ErrorHandler) HandleException(ctx handler.ExceptionContext, ex handler.E
 
 func NewErrorHandler() *ErrorHandler {
 	onceErrorHandler.Do(func() {
-		instanceErrorHandler = &ErrorHandler{}
+		instanceErrorHandler = &ErrorHandler{
+			logger: log.New(os.Stderr, "--", log.LstdFlags),
+		}
 	})
 	return instanceErrorHandler
 }
