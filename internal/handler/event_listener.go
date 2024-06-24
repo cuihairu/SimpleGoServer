@@ -14,7 +14,8 @@ var (
 )
 
 type ErrorHandler struct {
-	logger *log.Logger
+	logger    *log.Logger
+	errLogger *log.Logger
 }
 
 func (e ErrorHandler) OnStartup() {
@@ -30,7 +31,7 @@ func (e ErrorHandler) OnShutdown() {
 }
 
 func (e ErrorHandler) OnError(err any) {
-	e.logger.Println(err)
+	e.errLogger.Println(err)
 }
 
 func (e ErrorHandler) OnConnect(conn net.Conn) {
@@ -38,13 +39,14 @@ func (e ErrorHandler) OnConnect(conn net.Conn) {
 }
 
 func (e ErrorHandler) HandleException(ctx handler.ExceptionContext, ex handler.Exception) {
-	e.logger.Printf("handle exception :%s", ex)
+	e.errLogger.Printf("handle exception :%s", ex)
 }
 
 func NewErrorHandler() *ErrorHandler {
 	onceErrorHandler.Do(func() {
 		instanceErrorHandler = &ErrorHandler{
-			logger: log.New(os.Stderr, "--", log.LstdFlags),
+			errLogger: log.New(os.Stderr, "[Error]", log.LstdFlags),
+			logger:    log.New(os.Stdout, "[Info]", log.LstdFlags),
 		}
 	})
 	return instanceErrorHandler

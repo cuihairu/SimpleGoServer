@@ -26,7 +26,7 @@ func runServer() {
 		Listener:   addr,
 		LockThread: viper.GetBool("server.lockThread"),
 	}
-	newReactor, err := reactor.NewReactor(options, nil, nil, nil)
+	newReactor, err := reactor.NewReactor(options, nil, nil, nil, nil)
 	if err != nil {
 		panic(err)
 	}
@@ -66,12 +66,36 @@ func main() {
 	rootCmd.PersistentFlags().BoolVar(&lockThread, "lockThread", true, "lock thread")
 
 	// bind
-	viper.BindPFlag("server.host", rootCmd.PersistentFlags().Lookup("host"))
-	viper.BindPFlag("server.port", rootCmd.PersistentFlags().Lookup("port"))
-	viper.BindPFlag("server.network", rootCmd.PersistentFlags().Lookup("network"))
-	viper.BindPFlag("server.multicore", rootCmd.PersistentFlags().Lookup("multicore"))
-	viper.BindPFlag("server.numWorkers", rootCmd.PersistentFlags().Lookup("numWorkers"))
-	viper.BindPFlag("server.lockThread", rootCmd.PersistentFlags().Lookup("lockThread"))
+	err := viper.BindPFlag("server.host", rootCmd.PersistentFlags().Lookup("host"))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "bind config error: %s\n", err)
+		return
+	}
+	err = viper.BindPFlag("server.port", rootCmd.PersistentFlags().Lookup("port"))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "bind config error: %s\n", err)
+		return
+	}
+	err = viper.BindPFlag("server.network", rootCmd.PersistentFlags().Lookup("network"))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "bind config error: %s\n", err)
+		return
+	}
+	err = viper.BindPFlag("server.multicore", rootCmd.PersistentFlags().Lookup("multicore"))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "bind config error: %s\n", err)
+		return
+	}
+	err = viper.BindPFlag("server.numWorkers", rootCmd.PersistentFlags().Lookup("workers"))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "bind config error: %s\n", err)
+		return
+	}
+	err = viper.BindPFlag("server.lockThread", rootCmd.PersistentFlags().Lookup("lockThread"))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "bind config error: %s\n", err)
+		return
+	}
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Println(err)

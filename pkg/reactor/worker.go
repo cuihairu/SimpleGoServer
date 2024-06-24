@@ -75,7 +75,7 @@ func (g *WorkerGroup) Dispatch(conn net.Conn) error {
 func NewWorker(ctx context.Context, id int, eventListener handler.EventListener, pipelineInitializer handler.PipeInitializer) (*Worker, error) {
 	return &Worker{
 		ctx:                 ctx,
-		newCh:               make(chan net.Conn),
+		newCh:               make(chan net.Conn, 100),
 		id:                  id,
 		pipelineInitializer: pipelineInitializer,
 		eventListener:       eventListener,

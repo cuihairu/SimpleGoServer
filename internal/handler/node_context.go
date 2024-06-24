@@ -15,6 +15,7 @@ type NodeContext struct {
 	outboundHandler  handler.OutboundHandler
 	exceptionHandler handler.ExceptionHandler
 	inactiveHandler  handler.InactiveHandler
+	executorHandler  handler.ExecutorHandler
 }
 
 var _ handler.HandlerContext = (*NodeContext)(nil)
@@ -31,6 +32,7 @@ func NewNodeContext(pipeline handler.Pipeline, h handler.Handler, prev *NodeCont
 	n.outboundHandler, _ = h.(handler.OutboundHandler)
 	n.exceptionHandler, _ = h.(handler.ExceptionHandler)
 	n.inactiveHandler, _ = h.(handler.InactiveHandler)
+	n.executorHandler, _ = h.(handler.ExecutorHandler)
 	return n
 }
 

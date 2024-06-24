@@ -4,7 +4,6 @@ import (
 	"errors"
 	"github.com/cuihairu/simplegoserver/pkg/handler"
 	"net"
-	"sync"
 )
 
 type LinkedPipeline struct {
@@ -12,7 +11,6 @@ type LinkedPipeline struct {
 	tail *NodeContext
 	conn net.Conn
 	size int
-	sync.RWMutex
 }
 
 func (p *LinkedPipeline) IndexOf(f func(handler.Handler) bool) int {
@@ -57,11 +55,11 @@ func (p *LinkedPipeline) ContextAt(position int) handler.HandlerContext {
 
 var _ handler.Pipeline = (*LinkedPipeline)(nil)
 
-func WithDefaultPipeline(pipeline handler.Pipeline) error {
-	if pipeline == nil {
+func WithDefaultPipeline(p handler.Pipeline) error {
+	if p == nil {
 		return errors.New("pipeline is nil")
 	}
-	pipeline.AddLast(NewErrorHandler())
+	p.AddLast(NewErrorHandler())
 	return nil
 }
 
@@ -86,16 +84,14 @@ func (p *LinkedPipeline) Conn() net.Conn {
 }
 
 func (p *LinkedPipeline) addFirst(handler handler.Handler) *LinkedPipeline {
-	next := p.head.next
-	p.head.prev = NewNodeContext(p, handler, p.head, next)
-	next.prev.next = p.head.next
+	oldNext := p.head.next
+	p.head.next = NewNodeContext(p, handler, p.head, oldNext)
+	oldNext.prev = p.head.next
 	p.size++
 	return p
 }
 func (p *LinkedPipeline) AddFirst(handlers ...handler.Handler) handler.Pipeline {
-	p.RWMutex.Lock()
-	defer p.RWMutex.Unlock()
-	if !handler.IsValidHandlers(handlers) {
+	if !handler.IsValidHandlers(handlers...) {
 		panic("invalid handler")
 	}
 	for _, h := range handlers {
@@ -105,17 +101,15 @@ func (p *LinkedPipeline) AddFirst(handlers ...handler.Handler) handler.Pipeline 
 }
 
 func (p *LinkedPipeline) addLast(h handler.Handler) *LinkedPipeline {
-	next := p.tail.next
-	p.tail.prev = NewNodeContext(p, h, next, p.tail)
-	p.tail.next = p.tail.prev
+	oldPrev := p.tail.prev
+	p.tail.prev = NewNodeContext(p, h, oldPrev, p.tail)
+	oldPrev.next = p.tail.prev
 	p.size++
 	return p
 }
 
 func (p *LinkedPipeline) AddLast(handlers ...handler.Handler) handler.Pipeline {
-	p.RWMutex.Lock()
-	defer p.RWMutex.Unlock()
-	if !handler.IsValidHandlers(handlers) {
+	if !handler.IsValidHandlers(handlers...) {
 		panic("invalid handler")
 	}
 	for _, h := range handlers {
@@ -125,7 +119,7 @@ func (p *LinkedPipeline) AddLast(handlers ...handler.Handler) handler.Pipeline {
 }
 
 func (p *LinkedPipeline) AddHandler(position int, handlers ...handler.Handler) handler.Pipeline {
-	if !handler.IsValidHandlers(handlers) {
+	if !handler.IsValidHandlers(handlers...) {
 		panic("invalid handler")
 	}
 	if (position < 0) || (position > p.size) {
@@ -137,8 +131,6 @@ func (p *LinkedPipeline) AddHandler(position int, handlers ...handler.Handler) h
 	if position == p.size {
 		return p.AddLast(handlers...)
 	}
-	p.RWMutex.Lock()
-	defer p.RWMutex.Unlock()
 	curNode := p.head
 	for i := 0; i < position; i++ {
 		curNode = curNode.next

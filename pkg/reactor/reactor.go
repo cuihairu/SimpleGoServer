@@ -5,6 +5,7 @@ import (
 	handlerImpl "github.com/cuihairu/simplegoserver/internal/handler"
 	"github.com/cuihairu/simplegoserver/pkg/handler"
 	"github.com/cuihairu/simplegoserver/pkg/utils"
+	"log"
 	"net"
 	"net/url"
 	"os"
@@ -22,9 +23,13 @@ type Reactor struct {
 	graceful            *utils.Graceful
 	eventListener       handler.EventListener
 	pipelineInitializer handler.PipeInitializer
+	logger              *log.Logger
 }
 
-func NewReactor(opts Options, eventListener handler.EventListener, pipelineInitializer handler.PipeInitializer, balancer Balancer) (*Reactor, error) {
+func NewReactor(opts Options, logger *log.Logger, eventListener handler.EventListener, pipelineInitializer handler.PipeInitializer, balancer Balancer) (*Reactor, error) {
+	if logger == nil {
+		logger = log.New(os.Stdout, "", log.LstdFlags|log.Lmicroseconds)
+	}
 	if eventListener == nil {
 		eventListener = handlerImpl.NewErrorHandler()
 	}
@@ -38,6 +43,7 @@ func NewReactor(opts Options, eventListener handler.EventListener, pipelineIniti
 		eventListener.OnError(err)
 		return nil, err
 	}
+	logger.Printf("listening on %s:%s", parse.Scheme, parse.Host)
 	ctx, ctxCancel := context.WithCancel(context.Background())
 
 	group, err := NewWorkerGroup(opts, ctx, eventListener, pipelineInitializer, balancer)

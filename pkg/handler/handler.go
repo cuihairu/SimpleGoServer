@@ -1,6 +1,8 @@
 package handler
 
-import "github.com/cuihairu/simplegoserver/pkg/utils"
+import (
+	"github.com/cuihairu/simplegoserver/pkg/utils"
+)
 
 type (
 	Handler interface {
@@ -64,11 +66,11 @@ type ChannelOutboundHandler interface {
 }
 
 func IsValidHandlers(handlers ...Handler) bool {
-	for _, handler := range handlers {
-		if handler == nil {
+	for _, h := range handlers {
+		if h == nil {
 			return false
 		}
-		switch handler.(type) {
+		switch h.(type) {
 		case ActiveHandler:
 		case InboundHandler:
 		case OutboundHandler:
