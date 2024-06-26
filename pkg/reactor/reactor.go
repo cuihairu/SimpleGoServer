@@ -3,6 +3,7 @@ package reactor
 import (
 	"context"
 	handlerImpl "github.com/cuihairu/simplegoserver/internal/handler"
+	"github.com/cuihairu/simplegoserver/pkg"
 	"github.com/cuihairu/simplegoserver/pkg/handler"
 	"github.com/cuihairu/simplegoserver/pkg/utils"
 	"log"
@@ -26,7 +27,7 @@ type Reactor struct {
 	logger              *log.Logger
 }
 
-func NewReactor(opts Options, logger *log.Logger, eventListener handler.EventListener, pipelineInitializer handler.PipeInitializer, balancer Balancer) (*Reactor, error) {
+func NewReactor(opts Options, logger *log.Logger, eventListener handler.EventListener, pipelineInitializer handler.PipeInitializer, balancer pkg.Balancer) (*Reactor, error) {
 	if logger == nil {
 		logger = log.New(os.Stdout, "", log.LstdFlags|log.Lmicroseconds)
 	}

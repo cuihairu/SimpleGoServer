@@ -3,6 +3,7 @@ package reactor
 import (
 	"context"
 	handlerImpl "github.com/cuihairu/simplegoserver/internal/handler"
+	"github.com/cuihairu/simplegoserver/pkg"
 	"github.com/cuihairu/simplegoserver/pkg/handler"
 	"net"
 	"runtime"
@@ -22,12 +23,12 @@ type Worker struct {
 }
 
 type WorkerGroup struct {
-	balancer      Balancer
+	balancer      pkg.Balancer
 	opts          Options
 	eventListener handler.EventListener
 }
 
-func NewWorkerGroup(opts Options, ctx context.Context, eventListener handler.EventListener, pipelineInitializer handler.PipeInitializer, balancer Balancer) (*WorkerGroup, error) {
+func NewWorkerGroup(opts Options, ctx context.Context, eventListener handler.EventListener, pipelineInitializer handler.PipeInitializer, balancer pkg.Balancer) (*WorkerGroup, error) {
 	if eventListener == nil {
 		panic("eventListener must not be nil")
 	}
@@ -38,7 +39,7 @@ func NewWorkerGroup(opts Options, ctx context.Context, eventListener handler.Eve
 		pipelineInitializer = handlerImpl.WithDefaultPipeline
 	}
 	if balancer == nil {
-		balancer = NewLeastBalancer()
+		balancer = pkg.NewLeastBalancer()
 	}
 
 	for i := 0; i < opts.NumWorkers; i++ {
