@@ -3,7 +3,6 @@ package balancer
 import (
 	"errors"
 	"github.com/cuihairu/simplegoserver/pkg"
-	"net"
 	"sync"
 )
 
@@ -23,7 +22,7 @@ func NewRoundRobinBalancer() *RoundRobinBalancer {
 	}
 }
 
-func (b *RoundRobinBalancer) Next(ch net.Conn) (pkg.Backend, error) {
+func (b *RoundRobinBalancer) Next(key string) (pkg.Backend, error) {
 	b.rwMutex.RLock()
 	defer b.rwMutex.RUnlock()
 	size := len(b.backends)

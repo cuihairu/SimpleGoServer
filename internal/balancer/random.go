@@ -4,7 +4,6 @@ import (
 	"errors"
 	"github.com/cuihairu/simplegoserver/pkg"
 	"math/rand"
-	"net"
 	"sync"
 )
 
@@ -20,7 +19,7 @@ func NewRandomBalancer() *RandomBalancer {
 	}
 }
 
-func (r *RandomBalancer) Next(ch net.Conn) (pkg.Backend, error) {
+func (r *RandomBalancer) Next(key string) (pkg.Backend, error) {
 	r.rwMutex.RLock()
 	defer r.rwMutex.RUnlock()
 	if len(r.backends) == 0 {

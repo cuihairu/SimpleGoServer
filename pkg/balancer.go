@@ -1,9 +1,5 @@
 package pkg
 
-import (
-	"net"
-)
-
 type Backend interface {
 	Id() string
 }
@@ -15,7 +11,7 @@ type WeightBackend interface {
 }
 
 type Balancer interface {
-	Next(ch net.Conn) (Backend, error)
+	Next(key string) (Backend, error)
 	Register(b Backend) error
 	Unregister(b Backend) error
 	Size() int

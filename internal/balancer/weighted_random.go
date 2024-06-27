@@ -2,13 +2,12 @@ package balancer
 
 import (
 	"github.com/cuihairu/simplegoserver/pkg"
-	"net"
 )
 
 type WeightedRandomBalancer struct {
 }
 
-func (w WeightedRandomBalancer) Next(ch net.Conn) (pkg.Backend, error) {
+func (w WeightedRandomBalancer) Next(key string) (pkg.Backend, error) {
 	//TODO implement me
 	panic("implement me")
 }

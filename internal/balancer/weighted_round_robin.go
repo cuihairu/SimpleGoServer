@@ -3,7 +3,7 @@ package balancer
 import (
 	"errors"
 	"github.com/cuihairu/simplegoserver/pkg"
-	"net"
+	"sort"
 	"sync"
 )
 
@@ -25,7 +25,7 @@ func NewWeightedRoundRobinBalancer() *WeightedRoundRobinBalancer {
 	}
 }
 
-func (b *WeightedRoundRobinBalancer) Next(conn net.Conn) (pkg.Backend, error) {
+func (b *WeightedRoundRobinBalancer) Next(key string) (pkg.Backend, error) {
 	b.rwMutex.RLock()
 	defer b.rwMutex.RUnlock()
 	size := len(b.backends)
@@ -36,14 +36,16 @@ func (b *WeightedRoundRobinBalancer) Next(conn net.Conn) (pkg.Backend, error) {
 		return b.backends[0], nil
 	}
 
-	for {
-		b.currentWeight = (b.currentWeight+1)%b.indexToTotalWeight[len(b.indexToTotalWeight)-1] + b.indexToTotalWeight[0]
-		for index := len(b.indexToTotalWeight) - 1; index >= 0; index-- {
-			if b.indexToTotalWeight[index] >= b.currentWeight {
-				return b.backends[index], nil
-			}
-		}
+	end := b.indexToTotalWeight[size-1]
+	start := b.indexToTotalWeight[0]
+	b.currentWeight = (b.currentWeight+1)%(end-start) + start
+	index := sort.Search(size, func(i int) bool {
+		return b.indexToTotalWeight[i] >= b.currentWeight
+	})
+	if index >= size {
+		index = 0
 	}
+	return b.backends[index], nil
 }
 
 func (b *WeightedRoundRobinBalancer) buildIndexToTotalWeight() {
