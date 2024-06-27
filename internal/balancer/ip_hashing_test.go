@@ -19,8 +19,20 @@ func (w *FakeBackend) Weight() int {
 	return w.weight
 }
 
+func (w *FakeBackend) SetWeight(weight int) {
+	w.weight = weight
+}
+
 func NewFakeBackend(id string, weight int) *FakeBackend {
 	return &FakeBackend{id: id, weight: weight}
+}
+
+func NewFakeBackendBulk(batch int) []*FakeBackend {
+	l := make([]*FakeBackend, batch)
+	for i := range l {
+		l[i] = NewFakeBackend(fmt.Sprintf("fake_backend_%d", i), batch)
+	}
+	return l
 }
 
 func TestIPHashingBalancer_Next(t *testing.T) {

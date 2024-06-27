@@ -3,25 +3,24 @@ package balancer
 import (
 	"errors"
 	"github.com/cuihairu/simplegoserver/pkg"
-	"sort"
 	"sync"
 )
 
 type WeightedRoundRobinBalancer struct {
-	backends           []pkg.WeightBackend
-	indexToTotalWeight []int
-	currentWeight      int
-	rwMutex            sync.RWMutex
+	backends      []pkg.WeightBackend
+	currentWeight int
+	totalWeight   int
+	rwMutex       sync.RWMutex
 }
 
 var _ pkg.Balancer = (*WeightedRoundRobinBalancer)(nil)
 
 func NewWeightedRoundRobinBalancer() *WeightedRoundRobinBalancer {
 	return &WeightedRoundRobinBalancer{
-		backends:           make([]pkg.WeightBackend, 0),
-		currentWeight:      0,
-		indexToTotalWeight: make([]int, 0),
-		rwMutex:            sync.RWMutex{},
+		backends:      make([]pkg.WeightBackend, 0),
+		currentWeight: 0,
+		totalWeight:   0,
+		rwMutex:       sync.RWMutex{},
 	}
 }
 
@@ -35,29 +34,15 @@ func (b *WeightedRoundRobinBalancer) Next(key string) (pkg.Backend, error) {
 	if size == 1 {
 		return b.backends[0], nil
 	}
-
-	end := b.indexToTotalWeight[size-1]
-	start := b.indexToTotalWeight[0]
-	b.currentWeight = (b.currentWeight+1)%(end-start) + start
-	index := sort.Search(size, func(i int) bool {
-		return b.indexToTotalWeight[i] >= b.currentWeight
-	})
-	if index >= size {
-		index = 0
+	b.currentWeight = (b.currentWeight + 1) % b.totalWeight
+	current := b.currentWeight
+	for i, backend := range b.backends {
+		if current < backend.Weight() {
+			return b.backends[i], nil
+		}
+		current -= backend.Weight()
 	}
-	return b.backends[index], nil
-}
-
-func (b *WeightedRoundRobinBalancer) buildIndexToTotalWeight() {
-	if len(b.backends) == 0 {
-		return
-	}
-	b.indexToTotalWeight = make([]int, len(b.backends))
-	totalWeight := 0
-	for i := 0; i < len(b.backends); i++ {
-		totalWeight += b.indexToTotalWeight[i]
-		b.indexToTotalWeight[i] = totalWeight
-	}
+	return b.backends[0], nil
 }
 
 func (b *WeightedRoundRobinBalancer) Register(backend pkg.Backend) error {
@@ -75,13 +60,13 @@ func (b *WeightedRoundRobinBalancer) Register(backend pkg.Backend) error {
 			continue
 		}
 		if back.Weight() != weightedBackend.Weight() {
+			b.totalWeight -= back.Weight() - weightedBackend.Weight()
 			back.SetWeight(weightedBackend.Weight())
-			b.buildIndexToTotalWeight()
 		}
 		return nil
 	}
 	b.backends = append(b.backends, weightedBackend)
-	b.buildIndexToTotalWeight()
+	b.totalWeight += weightedBackend.Weight()
 	return nil
 }
 
@@ -91,7 +76,6 @@ func (b *WeightedRoundRobinBalancer) Unregister(unregisterBackend pkg.Backend) e
 	for i, back := range b.backends {
 		if back.Id() == unregisterBackend.Id() {
 			b.backends = append(b.backends[:i], b.backends[i+1:]...)
-			b.buildIndexToTotalWeight()
 			return nil
 		}
 	}
