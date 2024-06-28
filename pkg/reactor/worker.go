@@ -4,6 +4,7 @@ import (
 	"context"
 	handlerImpl "github.com/cuihairu/simplegoserver/internal/handler"
 	"github.com/cuihairu/simplegoserver/pkg"
+	"github.com/cuihairu/simplegoserver/pkg/event"
 	"github.com/cuihairu/simplegoserver/pkg/handler"
 	"net"
 	"runtime"
@@ -19,16 +20,16 @@ type Worker struct {
 	id                  int
 	opts                Options
 	pipelineInitializer handler.PipeInitializer
-	eventListener       handler.EventListener
+	eventListener       event.EventListener
 }
 
 type WorkerGroup struct {
 	balancer      pkg.Balancer
 	opts          Options
-	eventListener handler.EventListener
+	eventListener event.EventListener
 }
 
-func NewWorkerGroup(opts Options, ctx context.Context, eventListener handler.EventListener, pipelineInitializer handler.PipeInitializer, balancer pkg.Balancer) (*WorkerGroup, error) {
+func NewWorkerGroup(opts Options, ctx context.Context, eventListener event.EventListener, pipelineInitializer handler.PipeInitializer, balancer pkg.Balancer) (*WorkerGroup, error) {
 	if eventListener == nil {
 		panic("eventListener must not be nil")
 	}
@@ -73,7 +74,7 @@ func (g *WorkerGroup) Dispatch(conn net.Conn) error {
 	return nil
 }
 
-func NewWorker(ctx context.Context, id int, eventListener handler.EventListener, pipelineInitializer handler.PipeInitializer) (*Worker, error) {
+func NewWorker(ctx context.Context, id int, eventListener event.EventListener, pipelineInitializer handler.PipeInitializer) (*Worker, error) {
 	return &Worker{
 		ctx:                 ctx,
 		newCh:               make(chan net.Conn, 100),

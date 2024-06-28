@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"github.com/cuihairu/simplegoserver/pkg/event"
 	"github.com/cuihairu/simplegoserver/pkg/handler"
 	"log"
 	"net"
@@ -53,4 +54,4 @@ func NewErrorHandler() *ErrorHandler {
 }
 
 var _ handler.ExceptionHandler = (*ErrorHandler)(nil)
-var _ handler.EventListener = (*ErrorHandler)(nil)
+var _ event.EventListener = (*ErrorHandler)(nil)

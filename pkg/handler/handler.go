@@ -1,7 +1,7 @@
 package handler
 
 import (
-	"github.com/cuihairu/simplegoserver/pkg/utils"
+	"github.com/cuihairu/simplegoserver/pkg"
 )
 
 type (
@@ -32,7 +32,7 @@ type (
 		HandleInactive(ctx InactiveContext, ex Exception)
 	}
 	ExecutorHandler interface {
-		Executor() utils.Executor
+		Executor() pkg.Executor
 	}
 )
 

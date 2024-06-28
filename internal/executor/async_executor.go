@@ -1,20 +1,13 @@
-package utils
+package executor
 
 import (
 	"context"
+	"github.com/cuihairu/simplegoserver/pkg"
 	"runtime"
 	"sync"
 )
 
-type Action func()
-
-type Executor interface {
-	Start()
-	Exec(action Action)
-	Stop()
-}
-
-var _ Executor = (*AsyncExecutor)(nil)
+var _ pkg.Executor = (*AsyncExecutor)(nil)
 
 type AsyncExecutor struct {
 	tasks     chan func()
@@ -48,7 +41,7 @@ func (e *AsyncExecutor) Stop() {
 	e.cancel()
 }
 
-func (e *AsyncExecutor) Exec(task Action) {
+func (e *AsyncExecutor) Exec(task pkg.Action) {
 	e.tasks <- task
 }
 

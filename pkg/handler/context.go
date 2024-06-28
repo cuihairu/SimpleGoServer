@@ -7,7 +7,7 @@ type (
 	}
 	Attachment interface {
 	}
-	HandlerContext interface {
+	Context interface {
 		Conn() net.Conn
 		Handler() Handler
 		Write(Message)
@@ -16,31 +16,31 @@ type (
 		SetAttachment(Attachment)
 	}
 	ActiveContext interface {
-		HandlerContext
+		Context
 		HandleActive()
 	}
 
 	// InboundContext defines an inbound handler
 	InboundContext interface {
-		HandlerContext
+		Context
 		HandleRead(message Message)
 	}
 
 	// OutboundContext defines an outbound handler
 	OutboundContext interface {
-		HandlerContext
+		Context
 		HandleWrite(message Message)
 	}
 
 	// ExceptionContext defines an exception handler
 	ExceptionContext interface {
-		HandlerContext
+		Context
 		HandleException(ex Exception)
 	}
 
 	// InactiveContext defines an inactive handler
 	InactiveContext interface {
-		HandlerContext
+		Context
 		HandleInactive(ex Exception)
 	}
 )

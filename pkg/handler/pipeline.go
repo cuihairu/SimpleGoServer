@@ -20,7 +20,7 @@ type Pipeline interface {
 	LastIndexOf(func(Handler) bool) int
 
 	// ContextAt get context by position.
-	ContextAt(position int) HandlerContext
+	ContextAt(position int) Context
 
 	// Size of handler
 	Size() int

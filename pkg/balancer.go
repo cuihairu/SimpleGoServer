@@ -10,6 +10,12 @@ type WeightBackend interface {
 	SetWeight(weight int)
 }
 
+type CountBackend interface {
+	Backend
+	Count() int
+	SetCount(count int)
+}
+
 type Balancer interface {
 	Next(key string) (Backend, error)
 	Register(b Backend) error
