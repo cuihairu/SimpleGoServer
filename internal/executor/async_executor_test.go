@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"context"
 	"fmt"
 	"github.com/cuihairu/simplegoserver/pkg"
 	"testing"
@@ -8,17 +9,17 @@ import (
 )
 
 func TestNewAsyncExecutor(t *testing.T) {
-	var executor pkg.Executor = pkg.NewAsyncExecutor(2)
-	executor.Start()
-	ret := make(chan int, 1)
-	executor.Exec(func() {
+	var executor pkg.Executor[int] = NewAsyncExecutor[int](2)
+	future := executor.Submit(func(cxt context.Context) (int, error) {
 		fmt.Printf("start: %+v\n", time.Now())
-		select {
-		case <-time.After(2 * time.Second):
-			fmt.Printf("end: %v\n", time.Now())
-			ret <- 1
-		}
+		time.Sleep(2 * time.Second)
+		return 1, nil
 	})
-	<-ret
-	executor.Stop()
+	timeout, err := future.GetWithTimeout(30 * time.Second)
+	if err != nil {
+		t.Logf("err: %+v\n", err)
+	} else {
+		t.Logf("result: %+v\n", timeout)
+	}
+	executor.Shutdown()
 }

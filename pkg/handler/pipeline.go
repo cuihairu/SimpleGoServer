@@ -34,4 +34,4 @@ type Pipeline interface {
 	FireInactive(ex Exception)
 }
 
-type PipeInitializer func(pipeline Pipeline) error
+type PipelineInitializer func(pipeline Pipeline) error
