@@ -1,8 +1,7 @@
 package event
 
-import "net"
-
 type Dispatcher interface {
-	RegisterEvent()
-	Dispatch(conn net.Conn)
+	RegisterEvent(event Event, handler Handler)
+	UnregisterEvent(event Event)
+	Dispatch(event Event)
 }

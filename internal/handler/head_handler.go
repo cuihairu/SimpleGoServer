@@ -24,6 +24,10 @@ func NewHeadHandler() *HeadHandler {
 	return instanceHeadHandler
 }
 
+type Buffer interface {
+	Bytes() []byte
+}
+
 func (h HeadHandler) HandleWrite(ctx handler.OutboundContext, message handler.Message) {
 	switch m := message.(type) {
 	case []byte:
@@ -34,7 +38,7 @@ func (h HeadHandler) HandleWrite(ctx handler.OutboundContext, message handler.Me
 			utils.AssertWriteLength(buffer.Write(b))
 		}
 		utils.AssertWriteLength(ctx.Conn().Write(buffer.Bytes()))
-	case *bytes.Buffer:
+	case Buffer:
 		utils.AssertWriteLength(ctx.Conn().Write(m.Bytes()))
 	case io.WriterTo:
 		utils.AssertWriteLength(m.WriteTo(ctx.Conn()))

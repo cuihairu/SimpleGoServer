@@ -26,7 +26,7 @@ func (t TailHeader) HandleException(ctx handler.ExceptionContext, ex handler.Exc
 	fmt.Fprintln(os.Stderr,
 		"An HandleException() event was fired, and it reached at the tail of the pipeline.",
 		"It usually means the last handler in the pipeline did not handle the exception.",
-		"We will close the channel, If you don't want to close the channel please add HandleException() to the pipeline.\n",
+		"We will close the channels, If you don't want to close the channels please add HandleException() to the pipeline.\n",
 		"Exception throw on ", ctx.Conn().RemoteAddr(), "\n",
 		ex,
 	)

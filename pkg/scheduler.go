@@ -5,4 +5,5 @@ type Task interface {
 }
 
 type Scheduler interface {
+	Submit(task Task)
 }

@@ -1,4 +1,4 @@
-package channel
+package channels
 
 import "github.com/cuihairu/simplegoserver/pkg/event"
 

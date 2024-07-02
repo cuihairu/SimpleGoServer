@@ -42,7 +42,7 @@ type CodecHandler interface {
 	OutboundHandler
 }
 
-// ChannelHandler defines a channel handler
+// ChannelHandler defines a channels handler
 type ChannelHandler interface {
 	ActiveHandler
 	InboundHandler
@@ -51,14 +51,14 @@ type ChannelHandler interface {
 	InactiveHandler
 }
 
-// ChannelInboundHandler defines a channel inbound handler
+// ChannelInboundHandler defines a channels inbound handler
 type ChannelInboundHandler interface {
 	ActiveHandler
 	InboundHandler
 	InactiveHandler
 }
 
-// ChannelOutboundHandler defines a channel outbound handler
+// ChannelOutboundHandler defines a channels outbound handler
 type ChannelOutboundHandler interface {
 	ActiveHandler
 	OutboundHandler
