@@ -18,7 +18,7 @@ type NodeContext struct {
 	executorHandler  handler.ExecutorHandler
 }
 
-var _ handler.HandlerContext = (*NodeContext)(nil)
+var _ handler.Context = (*NodeContext)(nil)
 
 func NewNodeContext(pipeline handler.Pipeline, h handler.Handler, prev *NodeContext, next *NodeContext) *NodeContext {
 	n := &NodeContext{

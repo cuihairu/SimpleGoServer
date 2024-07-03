@@ -54,4 +54,4 @@ func NewErrorHandler() *ErrorHandler {
 }
 
 var _ handler.ExceptionHandler = (*ErrorHandler)(nil)
-var _ event.EventListener = (*ErrorHandler)(nil)
+var _ event.Listener = (*ErrorHandler)(nil)

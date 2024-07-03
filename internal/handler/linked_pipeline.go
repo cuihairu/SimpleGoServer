@@ -39,7 +39,7 @@ func (p *LinkedPipeline) LastIndexOf(f func(handler.Handler) bool) int {
 	return -1
 }
 
-func (p *LinkedPipeline) ContextAt(position int) handler.HandlerContext {
+func (p *LinkedPipeline) ContextAt(position int) handler.Context {
 	if position < 0 || position >= p.size {
 		return nil
 	}

@@ -32,7 +32,7 @@ type (
 		HandleInactive(ctx InactiveContext, ex Exception)
 	}
 	ExecutorHandler interface {
-		Executor() pkg.Executor
+		Executor() pkg.Executor[any]
 	}
 )
 
