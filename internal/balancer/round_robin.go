@@ -6,35 +6,36 @@ import (
 	"sync"
 )
 
-type RoundRobinBalancer struct {
-	backends []pkg.Backend
+type RoundRobinBalancer[T pkg.Backend] struct {
+	backends []T
 	current  int
 	rwMutex  sync.RWMutex
 }
 
-var _ pkg.Balancer = (*RoundRobinBalancer)(nil)
+var _ pkg.Balancer[pkg.Backend] = (*RoundRobinBalancer[pkg.Backend])(nil)
 
-func NewRoundRobinBalancer() *RoundRobinBalancer {
-	return &RoundRobinBalancer{
-		backends: make([]pkg.Backend, 0),
+func NewRoundRobinBalancer[T pkg.Backend]() *RoundRobinBalancer[T] {
+	return &RoundRobinBalancer[T]{
+		backends: make([]T, 0),
 		current:  0,
 		rwMutex:  sync.RWMutex{},
 	}
 }
 
-func (b *RoundRobinBalancer) Next(key string) (pkg.Backend, error) {
+func (b *RoundRobinBalancer[T]) Next(key string) (T, error) {
 	b.rwMutex.RLock()
 	defer b.rwMutex.RUnlock()
 	size := len(b.backends)
+	var backend T
 	if size == 0 {
-		return nil, errors.New("no backends registered")
+		return backend, errors.New("no backends registered")
 	}
-	backend := b.backends[b.current]
+	backend = b.backends[b.current]
 	b.current = (b.current + 1) % size
 	return backend, nil
 }
 
-func (b *RoundRobinBalancer) Register(backend pkg.Backend) error {
+func (b *RoundRobinBalancer[T]) Register(backend T) error {
 	b.rwMutex.Lock()
 	defer b.rwMutex.Unlock()
 	for _, back := range b.backends {
@@ -46,7 +47,7 @@ func (b *RoundRobinBalancer) Register(backend pkg.Backend) error {
 	return nil
 }
 
-func (b *RoundRobinBalancer) Unregister(unregisterBackend pkg.Backend) error {
+func (b *RoundRobinBalancer[T]) Unregister(unregisterBackend T) error {
 	b.rwMutex.Lock()
 	defer b.rwMutex.Unlock()
 	for i, back := range b.backends {
@@ -58,13 +59,13 @@ func (b *RoundRobinBalancer) Unregister(unregisterBackend pkg.Backend) error {
 	return nil
 }
 
-func (b *RoundRobinBalancer) Size() int {
+func (b *RoundRobinBalancer[T]) Size() int {
 	b.rwMutex.RLock()
 	defer b.rwMutex.RUnlock()
 	return len(b.backends)
 }
 
-func (b *RoundRobinBalancer) Iterate(f func(b pkg.Backend) bool) {
+func (b *RoundRobinBalancer[T]) Iterate(f func(b T) bool) {
 	b.rwMutex.Lock()
 	defer b.rwMutex.Unlock()
 	for _, backend := range b.backends {

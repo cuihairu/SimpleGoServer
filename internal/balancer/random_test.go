@@ -6,7 +6,7 @@ import (
 )
 
 func TestRandomBalancer_Next(t *testing.T) {
-	balancer := NewRandomBalancer()
+	balancer := NewRandomBalancer[*FakeBackend]()
 	bulk := NewFakeBackendBulk(10)
 	for i, backend := range bulk {
 		err := balancer.Register(backend)

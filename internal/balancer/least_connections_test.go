@@ -6,7 +6,7 @@ import (
 )
 
 func TestName(t *testing.T) {
-	balancer := NewLeastConnectionsBalancer()
+	balancer := NewLeastConnectionsBalancer[*FakeBackend](false)
 	bulk := NewFakeBackendBulk(10)
 	for _, backend := range bulk {
 		err := balancer.Register(backend)

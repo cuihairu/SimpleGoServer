@@ -7,7 +7,7 @@ import (
 
 func TestRoundRobinBalancer_Next(t *testing.T) {
 	bulk := NewFakeBackendBulk(10)
-	balancer := NewRoundRobinBalancer()
+	balancer := NewRoundRobinBalancer[*FakeBackend]()
 	for _, backend := range bulk {
 		err := balancer.Register(backend)
 		if err != nil {

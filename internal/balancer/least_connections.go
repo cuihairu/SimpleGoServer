@@ -6,62 +6,65 @@ import (
 	"sync"
 )
 
-type LeastConnectionsBalancer struct {
-	backends []pkg.WeightBackend
-	rwMutex  sync.RWMutex
+type LeastConnectionsBalancer[T pkg.CountBackend] struct {
+	backends    []T
+	updateCount bool
+	rwMutex     sync.RWMutex
 }
 
-func NewLeastConnectionsBalancer() *LeastConnectionsBalancer {
-	return &LeastConnectionsBalancer{
-		backends: make([]pkg.WeightBackend, 0),
-		rwMutex:  sync.RWMutex{},
+func NewLeastConnectionsBalancer[T pkg.CountBackend](updateCount bool) *LeastConnectionsBalancer[T] {
+	return &LeastConnectionsBalancer[T]{
+		backends:    make([]T, 0),
+		rwMutex:     sync.RWMutex{},
+		updateCount: updateCount,
 	}
 }
 
-func (l *LeastConnectionsBalancer) Next(key string) (pkg.Backend, error) {
+func (l *LeastConnectionsBalancer[T]) Next(key string) (T, error) {
 	l.rwMutex.Lock()
 	defer l.rwMutex.Unlock()
 	size := len(l.backends)
+	var next T
 	if size == 0 {
-		return nil, errors.New("no backends registered")
+		return next, errors.New("no backends registered")
 	}
+	next = l.backends[0]
+	defer func() {
+		if l.updateCount {
+			next.SetCount(next.Count() + 1)
+		}
+	}()
 	if size == 1 {
-		l.backends[0].SetWeight(l.backends[0].Weight() + 1)
-		return l.backends[0], nil
+		return next, nil
 	}
-	leastConn := l.backends[0].Weight()
+	leastConn := l.backends[0].Count()
 	idx := 0
 	for i := 1; i < len(l.backends); i++ {
-		if leastConn > l.backends[i].Weight() {
-			leastConn = l.backends[i].Weight()
+		if leastConn > l.backends[i].Count() {
+			leastConn = l.backends[i].Count()
 			idx = i
 		}
 	}
-	l.backends[idx].SetWeight(l.backends[idx].Weight() + 1)
-	return l.backends[idx], nil
+	next = l.backends[idx]
+	return next, nil
 }
 
-func (l *LeastConnectionsBalancer) Register(registerBackend pkg.Backend) error {
+func (l *LeastConnectionsBalancer[T]) Register(registerBackend T) error {
 	l.rwMutex.Lock()
 	defer l.rwMutex.Unlock()
-	weightedBackend, ok := registerBackend.(pkg.WeightBackend)
-	if !ok {
-		return errors.New("register backend is not a WeightBackend")
-	}
 	for _, back := range l.backends {
-		if back.Id() != registerBackend.Id() {
-			continue
-		}
-		if back.Weight() != weightedBackend.Weight() {
-			back.SetWeight(weightedBackend.Weight())
+		if back.Id() == registerBackend.Id() {
+			if l.updateCount {
+				back.SetCount(registerBackend.Count())
+			}
 			return nil
 		}
 	}
-	l.backends = append(l.backends, weightedBackend)
+	l.backends = append(l.backends, registerBackend)
 	return nil
 }
 
-func (l *LeastConnectionsBalancer) Unregister(b pkg.Backend) error {
+func (l *LeastConnectionsBalancer[T]) Unregister(b T) error {
 	l.rwMutex.Lock()
 	defer l.rwMutex.Unlock()
 	for i, back := range l.backends {
@@ -73,13 +76,13 @@ func (l *LeastConnectionsBalancer) Unregister(b pkg.Backend) error {
 	return nil
 }
 
-func (l *LeastConnectionsBalancer) Size() int {
+func (l *LeastConnectionsBalancer[T]) Size() int {
 	l.rwMutex.Lock()
 	defer l.rwMutex.Unlock()
 	return len(l.backends)
 }
 
-func (l *LeastConnectionsBalancer) Iterate(f func(b pkg.Backend) bool) {
+func (l *LeastConnectionsBalancer[T]) Iterate(f func(b T) bool) {
 	l.rwMutex.Lock()
 	defer l.rwMutex.Unlock()
 	for _, back := range l.backends {
@@ -89,4 +92,4 @@ func (l *LeastConnectionsBalancer) Iterate(f func(b pkg.Backend) bool) {
 	}
 }
 
-var _ pkg.Balancer = (*LeastConnectionsBalancer)(nil)
+var _ pkg.Balancer[pkg.CountBackend] = (*LeastConnectionsBalancer[pkg.CountBackend])(nil)

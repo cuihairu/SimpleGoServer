@@ -7,7 +7,7 @@ import (
 
 func TestWeightedRandomBalancer_Next(t *testing.T) {
 	bulk := NewFakeBackendBulk(10)
-	balancer := NewWeightedRandomBalancer()
+	balancer := NewWeightedRandomBalancer[*FakeBackend]()
 	for _, backend := range bulk {
 		backend.SetWeight(10)
 		err := balancer.Register(backend)

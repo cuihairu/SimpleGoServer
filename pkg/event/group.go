@@ -1,6 +1,9 @@
 package event
 
+import "net"
+
 type Group interface {
-	Dispatcher
-	Loop
+	Register(conn net.Conn)
+	ShutdownGracefully()
+	Next() Loop
 }

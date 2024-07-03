@@ -17,25 +17,26 @@ type SlaveRector struct {
 }
 
 type Reactor struct {
-	opts                Options
+	opts                pkg.Options
 	listener            net.Listener
 	workers             *WorkerGroup
 	cancelFunc          context.CancelFunc
 	ctx                 context.Context
 	graceful            *utils.Graceful
-	eventListener       event.EventListener
-	pipelineInitializer handler.PipeInitializer
+	eventListener       event.Listener
+	pipelineInitializer handler.PipelineInitializer
 	logger              *log.Logger
 }
 
-func NewReactor(opts Options, logger *log.Logger, eventListener event.EventListener, pipelineInitializer handler.PipeInitializer, balancer pkg.Balancer) (*Reactor, error) {
+func NewReactor(opts pkg.Options, logger *log.Logger, eventListener event.Listener, pipelineInitializer handler.PipelineInitializer, balancer pkg.Balancer) (*Reactor, error) {
 	if logger == nil {
 		logger = log.New(os.Stdout, "", log.LstdFlags|log.Lmicroseconds)
 	}
 	if eventListener == nil {
 		eventListener = handlerImpl.NewErrorHandler()
 	}
-	parse, err := url.Parse(opts.Listener)
+	serverOptions := opts.(*ServerOptions)
+	parse, err := url.Parse(serverOptions.Listener)
 	if err != nil {
 		eventListener.OnError(err)
 		return nil, err
@@ -62,7 +63,7 @@ func NewReactor(opts Options, logger *log.Logger, eventListener event.EventListe
 		eventListener: eventListener,
 	}
 	reactor.graceful = utils.NewGraceful(func(signal os.Signal) {
-		reactor.Stop()
+		reactor.ShutdownGracefully()
 	}, func() {
 		reactor.Reload()
 	})
@@ -97,7 +98,7 @@ func (r *Reactor) Run() {
 	}
 }
 
-func (r *Reactor) Stop() {
+func (r *Reactor) ShutdownGracefully() {
 	r.eventListener.OnShutdown()
 	r.cancelFunc()
 	r.listener.Close()

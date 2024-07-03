@@ -16,10 +16,10 @@ type CountBackend interface {
 	SetCount(count int)
 }
 
-type Balancer interface {
-	Next(key string) (Backend, error)
-	Register(b Backend) error
-	Unregister(b Backend) error
+type Balancer[T Backend] interface {
+	Next(key string) (T, error)
+	Register(b T) error
+	Unregister(b T) error
 	Size() int
-	Iterate(f func(b Backend) bool)
+	Iterate(f func(b T) bool)
 }

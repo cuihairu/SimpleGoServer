@@ -9,34 +9,35 @@ import (
 	"sync"
 )
 
-type IPHashingBalancer struct {
-	circle         map[uint32]pkg.Backend
+type IPHashingBalancer[T pkg.Backend] struct {
+	circle         map[uint32]T
 	replicas       int
 	size           int
 	sortedHashList []uint32
 	rwMutex        sync.RWMutex
 }
 
-func NewIPHashingBalancer(replicas int) *IPHashingBalancer {
+func NewIPHashingBalancer[T pkg.Backend](replicas int) *IPHashingBalancer[T] {
 	if replicas < 3 {
 		replicas = 3
 	}
-	return &IPHashingBalancer{
-		circle:   make(map[uint32]pkg.Backend),
+	return &IPHashingBalancer[T]{
+		circle:   make(map[uint32]T),
 		replicas: replicas,
 		rwMutex:  sync.RWMutex{},
 	}
 }
 
-func (I *IPHashingBalancer) Next(key string) (pkg.Backend, error) {
+func (I *IPHashingBalancer[T]) Next(key string) (T, error) {
 	I.rwMutex.RLock()
 	defer I.rwMutex.RUnlock()
+	var backend T
 	if len(I.circle) == 0 {
-		return nil, errors.New("no replicas")
+		return backend, errors.New("no replicas")
 	}
 	hash, err := hashKey(key)
 	if err != nil {
-		return nil, err
+		return backend, err
 	}
 	index := sort.Search(len(I.sortedHashList), func(i int) bool {
 		return I.sortedHashList[i] >= hash
@@ -56,7 +57,7 @@ func hashKey(key string) (uint32, error) {
 	return hasher.Sum32(), nil
 }
 
-func (I *IPHashingBalancer) Register(backend pkg.Backend) error {
+func (I *IPHashingBalancer[T]) Register(backend T) error {
 	I.rwMutex.Lock()
 	defer I.rwMutex.Unlock()
 	for i := 0; i < I.replicas; i++ {
@@ -75,7 +76,7 @@ func (I *IPHashingBalancer) Register(backend pkg.Backend) error {
 	return nil
 }
 
-func (I *IPHashingBalancer) Unregister(backend pkg.Backend) error {
+func (I *IPHashingBalancer[T]) Unregister(backend T) error {
 	I.rwMutex.Lock()
 	defer I.rwMutex.Unlock()
 	for i := 0; i < I.replicas; i++ {
@@ -96,13 +97,13 @@ func (I *IPHashingBalancer) Unregister(backend pkg.Backend) error {
 	return nil
 }
 
-func (I *IPHashingBalancer) Size() int {
+func (I *IPHashingBalancer[T]) Size() int {
 	I.rwMutex.RLock()
 	defer I.rwMutex.RUnlock()
 	return I.size
 }
 
-func (I *IPHashingBalancer) Iterate(f func(b pkg.Backend) bool) {
+func (I *IPHashingBalancer[T]) Iterate(f func(b T) bool) {
 	I.rwMutex.Lock()
 	defer I.rwMutex.Unlock()
 	for _, hash := range I.sortedHashList {
@@ -112,4 +113,4 @@ func (I *IPHashingBalancer) Iterate(f func(b pkg.Backend) bool) {
 	}
 }
 
-var _ pkg.Balancer = (*IPHashingBalancer)(nil)
+var _ pkg.Balancer[pkg.Backend] = (*IPHashingBalancer[pkg.Backend])(nil)

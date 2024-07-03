@@ -6,30 +6,31 @@ import (
 	"sync"
 )
 
-type WeightedRoundRobinBalancer struct {
-	backends      []pkg.WeightBackend
+type WeightedRoundRobinBalancer[T pkg.WeightBackend] struct {
+	backends      []T
 	currentWeight int
 	totalWeight   int
 	rwMutex       sync.RWMutex
 }
 
-var _ pkg.Balancer = (*WeightedRoundRobinBalancer)(nil)
+var _ pkg.Balancer[pkg.WeightBackend] = (*WeightedRoundRobinBalancer[pkg.WeightBackend])(nil)
 
-func NewWeightedRoundRobinBalancer() *WeightedRoundRobinBalancer {
-	return &WeightedRoundRobinBalancer{
-		backends:      make([]pkg.WeightBackend, 0),
+func NewWeightedRoundRobinBalancer[T pkg.WeightBackend]() *WeightedRoundRobinBalancer[T] {
+	return &WeightedRoundRobinBalancer[T]{
+		backends:      make([]T, 0),
 		currentWeight: 0,
 		totalWeight:   0,
 		rwMutex:       sync.RWMutex{},
 	}
 }
 
-func (b *WeightedRoundRobinBalancer) Next(key string) (pkg.Backend, error) {
+func (b *WeightedRoundRobinBalancer[T]) Next(key string) (T, error) {
 	b.rwMutex.RLock()
 	defer b.rwMutex.RUnlock()
 	size := len(b.backends)
+	var back T
 	if size == 0 {
-		return nil, errors.New("no backends registered")
+		return back, errors.New("no backends registered")
 	}
 	if size == 1 {
 		return b.backends[0], nil
@@ -45,11 +46,7 @@ func (b *WeightedRoundRobinBalancer) Next(key string) (pkg.Backend, error) {
 	return b.backends[0], nil
 }
 
-func (b *WeightedRoundRobinBalancer) Register(backend pkg.Backend) error {
-	weightedBackend, ok := backend.(pkg.WeightBackend)
-	if !ok {
-		return errors.New("backend is not WeightBackend")
-	}
+func (b *WeightedRoundRobinBalancer[T]) Register(weightedBackend T) error {
 	if weightedBackend.Weight() <= 0 {
 		return errors.New("backend has invalid Weight")
 	}
@@ -70,7 +67,7 @@ func (b *WeightedRoundRobinBalancer) Register(backend pkg.Backend) error {
 	return nil
 }
 
-func (b *WeightedRoundRobinBalancer) Unregister(unregisterBackend pkg.Backend) error {
+func (b *WeightedRoundRobinBalancer[T]) Unregister(unregisterBackend T) error {
 	b.rwMutex.Lock()
 	defer b.rwMutex.Unlock()
 	for i, back := range b.backends {
@@ -82,13 +79,13 @@ func (b *WeightedRoundRobinBalancer) Unregister(unregisterBackend pkg.Backend) e
 	return nil
 }
 
-func (b *WeightedRoundRobinBalancer) Size() int {
+func (b *WeightedRoundRobinBalancer[T]) Size() int {
 	b.rwMutex.RLock()
 	defer b.rwMutex.RUnlock()
 	return len(b.backends)
 }
 
-func (b *WeightedRoundRobinBalancer) Iterate(f func(pkg.Backend) bool) {
+func (b *WeightedRoundRobinBalancer[T]) Iterate(f func(T) bool) {
 	b.rwMutex.Lock()
 	defer b.rwMutex.Unlock()
 	for _, backend := range b.backends {

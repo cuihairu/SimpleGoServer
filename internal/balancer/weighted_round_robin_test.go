@@ -6,7 +6,7 @@ import (
 )
 
 func TestWeightedRoundRobinBalancer_Next(t *testing.T) {
-	balancer := NewWeightedRoundRobinBalancer()
+	balancer := NewWeightedRoundRobinBalancer[*FakeBackend]()
 	bulk := NewFakeBackendBulk(10)
 	for _, backend := range bulk {
 		backend.SetWeight(1)

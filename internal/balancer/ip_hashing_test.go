@@ -9,6 +9,15 @@ import (
 type FakeBackend struct {
 	id     string
 	weight int
+	count  int
+}
+
+func (w *FakeBackend) Count() int {
+	return w.count
+}
+
+func (w *FakeBackend) SetCount(count int) {
+	w.count = count
 }
 
 func (w *FakeBackend) Id() string {
@@ -36,7 +45,7 @@ func NewFakeBackendBulk(batch int) []*FakeBackend {
 }
 
 func TestIPHashingBalancer_Next(t *testing.T) {
-	balancer := NewIPHashingBalancer(6)
+	balancer := NewIPHashingBalancer[*FakeBackend](6)
 	for i := 0; i < 10; i++ {
 		w := NewFakeBackend(fmt.Sprintf("%d", i), i)
 		err := balancer.Register(w)

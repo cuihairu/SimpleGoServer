@@ -2,6 +2,8 @@ package reactor
 
 import (
 	"context"
+	"fmt"
+	balancerImpl "github.com/cuihairu/simplegoserver/internal/balancer"
 	handlerImpl "github.com/cuihairu/simplegoserver/internal/handler"
 	"github.com/cuihairu/simplegoserver/pkg"
 	"github.com/cuihairu/simplegoserver/pkg/event"
@@ -17,34 +19,43 @@ type Worker struct {
 	ctx                 context.Context
 	newCh               chan net.Conn
 	count               atomic.Int32
-	id                  int
-	opts                Options
-	pipelineInitializer handler.PipeInitializer
-	eventListener       event.EventListener
+	id                  string
+	opts                *ServerOptions
+	pipelineInitializer handler.PipelineInitializer
+	eventListener       event.Listener
+}
+
+func (w *Worker) Id() string {
+	return w.id
+}
+
+func (w *Worker) SetCount(count int) {
+
 }
 
 type WorkerGroup struct {
 	balancer      pkg.Balancer
-	opts          Options
-	eventListener event.EventListener
+	opts          pkg.Options
+	eventListener event.Listener
 }
 
-func NewWorkerGroup(opts Options, ctx context.Context, eventListener event.EventListener, pipelineInitializer handler.PipeInitializer, balancer pkg.Balancer) (*WorkerGroup, error) {
+func NewWorkerGroup(opts pkg.Options, ctx context.Context, eventListener event.Listener, pipelineInitializer handler.PipelineInitializer, balancer pkg.Balancer) (*WorkerGroup, error) {
 	if eventListener == nil {
 		panic("eventListener must not be nil")
 	}
-	if opts.NumWorkers <= 0 || opts.NumWorkers > runtime.NumCPU() || opts.Multicore {
-		opts.NumWorkers = runtime.NumCPU()
+	serverOptions := opts.(*ServerOptions)
+	if serverOptions.NumWorkers <= 0 || serverOptions.NumWorkers > runtime.NumCPU() || serverOptions.Multicore {
+		serverOptions.NumWorkers = runtime.NumCPU()
 	}
 	if pipelineInitializer == nil {
 		pipelineInitializer = handlerImpl.WithDefaultPipeline
 	}
 	if balancer == nil {
-		balancer = pkg.NewLeastBalancer()
+		balancer = balancerImpl.NewLeastConnectionsBalancer(false)
 	}
 
-	for i := 0; i < opts.NumWorkers; i++ {
-		worker, err := NewWorker(ctx, i, eventListener, pipelineInitializer)
+	for i := 0; i < serverOptions.NumWorkers; i++ {
+		worker, err := NewWorker(ctx, fmt.Sprintf("worker:%d", i), eventListener, pipelineInitializer)
 		if err != nil {
 			eventListener.OnError(err)
 			return nil, err
@@ -59,14 +70,14 @@ func NewWorkerGroup(opts Options, ctx context.Context, eventListener event.Event
 }
 
 func (g *WorkerGroup) Start() {
-	g.balancer.Iterate(func(wk *Worker) bool {
-		go wk.Run()
+	g.balancer.Iterate(func(bc pkg.Backend) bool {
+		go bc.(*Worker).Run()
 		return true
 	})
 }
 
 func (g *WorkerGroup) Dispatch(conn net.Conn) error {
-	worker, err := g.balancer.Dispatch(conn)
+	worker, err := g.balancer.Next(conn.RemoteAddr().String())
 	if err != nil {
 		return err
 	}
@@ -74,7 +85,7 @@ func (g *WorkerGroup) Dispatch(conn net.Conn) error {
 	return nil
 }
 
-func NewWorker(ctx context.Context, id int, eventListener event.EventListener, pipelineInitializer handler.PipeInitializer) (*Worker, error) {
+func NewWorker(ctx context.Context, id string, eventListener event.Listener, pipelineInitializer handler.PipelineInitializer) (*Worker, error) {
 	return &Worker{
 		ctx:                 ctx,
 		newCh:               make(chan net.Conn, 100),
@@ -133,3 +144,5 @@ func (w *Worker) handleConnection(conn net.Conn) {
 		}
 	}
 }
+
+var _ pkg.CountBackend = (*Worker)(nil)

@@ -7,23 +7,24 @@ import (
 	"sync"
 )
 
-type RandomBalancer struct {
-	backends []pkg.Backend
+type RandomBalancer[T pkg.Backend] struct {
+	backends []T
 	rwMutex  sync.RWMutex
 }
 
-func NewRandomBalancer() *RandomBalancer {
-	return &RandomBalancer{
-		backends: make([]pkg.Backend, 0),
+func NewRandomBalancer[T pkg.Backend]() *RandomBalancer[T] {
+	return &RandomBalancer[T]{
+		backends: make([]T, 0),
 		rwMutex:  sync.RWMutex{},
 	}
 }
 
-func (r *RandomBalancer) Next(key string) (pkg.Backend, error) {
+func (r *RandomBalancer[T]) Next(key string) (T, error) {
 	r.rwMutex.RLock()
 	defer r.rwMutex.RUnlock()
+	var b T
 	if len(r.backends) == 0 {
-		return nil, errors.New("no backends")
+		return b, errors.New("no backends")
 	}
 	if len(r.backends) == 1 {
 		return r.backends[0], nil
@@ -32,7 +33,7 @@ func (r *RandomBalancer) Next(key string) (pkg.Backend, error) {
 	return r.backends[rand.Intn(len(r.backends))], nil
 }
 
-func (r *RandomBalancer) Register(registerBackend pkg.Backend) error {
+func (r *RandomBalancer[T]) Register(registerBackend T) error {
 	r.rwMutex.Lock()
 	defer r.rwMutex.Unlock()
 	for _, back := range r.backends {
@@ -44,7 +45,7 @@ func (r *RandomBalancer) Register(registerBackend pkg.Backend) error {
 	return nil
 }
 
-func (r *RandomBalancer) Unregister(unregisterBackend pkg.Backend) error {
+func (r *RandomBalancer[T]) Unregister(unregisterBackend T) error {
 	r.rwMutex.Lock()
 	defer r.rwMutex.Unlock()
 	for i, back := range r.backends {
@@ -56,13 +57,13 @@ func (r *RandomBalancer) Unregister(unregisterBackend pkg.Backend) error {
 	return nil
 }
 
-func (r *RandomBalancer) Size() int {
+func (r *RandomBalancer[T]) Size() int {
 	r.rwMutex.RLock()
 	defer r.rwMutex.RUnlock()
 	return len(r.backends)
 }
 
-func (r *RandomBalancer) Iterate(f func(b pkg.Backend) bool) {
+func (r *RandomBalancer[T]) Iterate(f func(b T) bool) {
 	r.rwMutex.Lock()
 	defer r.rwMutex.Unlock()
 	for _, back := range r.backends {
@@ -72,4 +73,4 @@ func (r *RandomBalancer) Iterate(f func(b pkg.Backend) bool) {
 	}
 }
 
-var _ pkg.Balancer = (*RandomBalancer)(nil)
+var _ pkg.Balancer[pkg.CountBackend] = (*RandomBalancer[pkg.CountBackend])(nil)
