@@ -34,12 +34,12 @@ func (w *Worker) SetCount(count int) {
 }
 
 type WorkerGroup struct {
-	balancer      pkg.Balancer
+	balancer      pkg.Balancer[*Worker]
 	opts          pkg.Options
 	eventListener event.Listener
 }
 
-func NewWorkerGroup(opts pkg.Options, ctx context.Context, eventListener event.Listener, pipelineInitializer handler.PipelineInitializer, balancer pkg.Balancer) (*WorkerGroup, error) {
+func NewWorkerGroup(opts pkg.Options, ctx context.Context, eventListener event.Listener, pipelineInitializer handler.PipelineInitializer, balancer pkg.Balancer[*Worker]) (*WorkerGroup, error) {
 	if eventListener == nil {
 		panic("eventListener must not be nil")
 	}
@@ -51,7 +51,7 @@ func NewWorkerGroup(opts pkg.Options, ctx context.Context, eventListener event.L
 		pipelineInitializer = handlerImpl.WithDefaultPipeline
 	}
 	if balancer == nil {
-		balancer = balancerImpl.NewLeastConnectionsBalancer(false)
+		balancer = balancerImpl.NewLeastConnectionsBalancer[*Worker](false)
 	}
 
 	for i := 0; i < serverOptions.NumWorkers; i++ {
@@ -70,8 +70,8 @@ func NewWorkerGroup(opts pkg.Options, ctx context.Context, eventListener event.L
 }
 
 func (g *WorkerGroup) Start() {
-	g.balancer.Iterate(func(bc pkg.Backend) bool {
-		go bc.(*Worker).Run()
+	g.balancer.Iterate(func(bc *Worker) bool {
+		go bc.Run()
 		return true
 	})
 }

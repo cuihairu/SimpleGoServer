@@ -28,7 +28,7 @@ type Reactor struct {
 	logger              *log.Logger
 }
 
-func NewReactor(opts pkg.Options, logger *log.Logger, eventListener event.Listener, pipelineInitializer handler.PipelineInitializer, balancer pkg.Balancer) (*Reactor, error) {
+func NewReactor(opts pkg.Options, logger *log.Logger, eventListener event.Listener, pipelineInitializer handler.PipelineInitializer, balancer pkg.Balancer[*Worker]) (*Reactor, error) {
 	if logger == nil {
 		logger = log.New(os.Stdout, "", log.LstdFlags|log.Lmicroseconds)
 	}
