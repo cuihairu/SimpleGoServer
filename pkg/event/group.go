@@ -4,6 +4,7 @@ import "net"
 
 type Group interface {
 	Register(conn net.Conn)
+	Unregister(conn net.Conn)
 	ShutdownGracefully()
 	Next() Loop
 }
