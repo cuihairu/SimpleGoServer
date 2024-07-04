@@ -28,6 +28,8 @@ type Reactor struct {
 	logger              *log.Logger
 }
 
+var _ event.Group = (*Reactor)(nil)
+
 func NewReactor(opts pkg.Options, logger *log.Logger, eventListener event.Listener, pipelineInitializer handler.PipelineInitializer, balancer pkg.Balancer[*Worker]) (*Reactor, error) {
 	if logger == nil {
 		logger = log.New(os.Stdout, "", log.LstdFlags|log.Lmicroseconds)
@@ -99,7 +101,11 @@ func (r *Reactor) Run() {
 }
 
 func (r *Reactor) ShutdownGracefully() {
+	r.Stop()
+}
+
+func (r *Reactor) Stop() error {
 	r.eventListener.OnShutdown()
 	r.cancelFunc()
-	r.listener.Close()
+	return r.listener.Close()
 }
