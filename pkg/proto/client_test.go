@@ -143,3 +143,88 @@ func TestClientHandshakeRejectedClosesConnection(t *testing.T) {
 		t.Fatal("client stayed open after a rejected handshake")
 	}
 }
+
+// TestStrictHelloRejectsBusinessFramesFirst covers strict handshake mode:
+// a connection that starts talking business before HELLO is closed instead
+// of served.
+func TestStrictHelloRejectsBusinessFramesFirst(t *testing.T) {
+	echo := func(action string, data []byte) (any, error) {
+		return map[string]any{"action": action, "data": json.RawMessage(data)}, nil
+	}
+	addr, ph := startTCPServer(t, echo)
+	ph.requireHello.Store(true)
+
+	client, err := Dial(addr, nil)
+	if err != nil {
+		t.Fatalf("Dial(): %v", err)
+	}
+	defer client.Close()
+
+	if _, err := client.Call("echo", "too early", 2*time.Second); err == nil {
+		t.Fatal("Call before HELLO unexpectedly succeeded in strict mode")
+	}
+	select {
+	case <-client.Done():
+		// the server closed the connection, the client followed
+	case <-time.After(2 * time.Second):
+		t.Fatal("connection stayed open after a pre-handshake frame")
+	}
+}
+
+// TestStrictHelloAllowsHandshakeThenRequests checks that strict mode only
+// rejects frames before the handshake, not the handshake itself or
+// anything after it.
+func TestStrictHelloAllowsHandshakeThenRequests(t *testing.T) {
+	echo := func(action string, data []byte) (any, error) {
+		return map[string]any{"action": action, "data": json.RawMessage(data)}, nil
+	}
+	addr, ph := startTCPServer(t, echo)
+	ph.requireHello.Store(true)
+
+	client, err := Dial(addr, nil)
+	if err != nil {
+		t.Fatalf("Dial(): %v", err)
+	}
+	defer client.Close()
+
+	if _, err := client.Handshake(2 * time.Second); err != nil {
+		t.Fatalf("Handshake(): %v", err)
+	}
+	resp, err := client.Call("echo", "now allowed", 2*time.Second)
+	if err != nil || !resp.OK() {
+		t.Fatalf("Call after handshake: resp=%v err=%v", resp, err)
+	}
+	if err := client.Ping(2 * time.Second); err != nil {
+		t.Fatalf("Ping after handshake: %v", err)
+	}
+}
+
+// TestDuplicateHelloRejected pins the one-handshake-per-connection rule
+// (enforced in both handshake modes): a second HELLO is a protocol error
+// and closes the connection instead of silently replacing the session.
+func TestDuplicateHelloRejected(t *testing.T) {
+	echo := func(action string, data []byte) (any, error) {
+		return map[string]any{"action": action, "data": json.RawMessage(data)}, nil
+	}
+	addr, _ := startTCPServer(t, echo)
+
+	client, err := Dial(addr, nil)
+	if err != nil {
+		t.Fatalf("Dial(): %v", err)
+	}
+	defer client.Close()
+
+	if _, err := client.Handshake(2 * time.Second); err != nil {
+		t.Fatalf("first Handshake(): %v", err)
+	}
+	// roundTrip is package-private; the test lives next to the protocol,
+	// so it can speak at that level
+	if _, err := client.roundTrip(HELLO, RESPONSE, "hello", &HelloRequest{Versions: []int{ProtocolVersion}}, 2*time.Second); err == nil {
+		t.Fatal("second HELLO unexpectedly accepted")
+	}
+	select {
+	case <-client.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("connection stayed open after a duplicate HELLO")
+	}
+}

@@ -98,6 +98,13 @@ type ProtocolHandler struct {
 	// disconnected. Entries exist only while the topic has subscribers.
 	topicCache map[string][]cachedPublish
 
+	// requireHello turns on strict handshake mode: a connection's first
+	// frame must be HELLO and business frames arriving earlier close it.
+	// Whether a connection has handshaked is not tracked separately — a
+	// successful handshake is exactly what puts the connection into
+	// connTokens, so that map doubles as the handshake marker.
+	requireHello atomic.Bool
+
 	closed     chan struct{}
 	closeOnce  sync.Once
 	sessionTTL time.Duration
@@ -151,6 +158,12 @@ func NewProtocolHandler(handleRequest RequestHandler) *ProtocolHandler {
 	return p
 }
 
+// RequireHello toggles strict handshake mode: with it on, a connection's
+// first frame must be HELLO and any business frame arriving earlier closes
+// the connection. It is safe to call at any time; servers normally set it
+// once during setup, before accepting connections.
+func (p *ProtocolHandler) RequireHello(v bool) { p.requireHello.Store(v) }
+
 // Close stops the background session janitor. The handler stays usable for
 // connections that are already wired into a pipeline; closing it is only
 // needed to release the janitor goroutine, e.g. in tests.
@@ -202,6 +215,19 @@ func (p *ProtocolHandler) HandleRead(ctx handler.InboundContext, message handler
 		ctx.Close(fmt.Errorf("proto: unexpected inbound message %T, want *Frame", message))
 		return
 	}
+	// strict handshake mode: frames that need a negotiated session are
+	// refused before one exists. Reading the marker under the same map the
+	// handshake itself populates keeps the check exact — no flag that could
+	// drift from reality.
+	if p.requireHello.Load() && frame.Header.FrameType != HELLO {
+		p.mu.RLock()
+		_, handshaked := p.connTokens[ctx.Conn()]
+		p.mu.RUnlock()
+		if !handshaked {
+			ctx.Close(fmt.Errorf("proto: strict handshake: first frame must be HELLO, got %s", frame.Header.FrameType))
+			return
+		}
+	}
 	switch frame.Header.FrameType {
 	case HELLO:
 		p.handleHello(ctx, frame)
@@ -241,6 +267,16 @@ func (p *ProtocolHandler) HandleRead(ctx handler.InboundContext, message handler
 // reaps the dead transport from the subscription table — no disconnect
 // callback needed. Unknown or expired tokens start a fresh session.
 func (p *ProtocolHandler) handleHello(ctx handler.InboundContext, frame *Frame) {
+	// a connection handshakes exactly once: a second HELLO means the peer
+	// is confused or hostile, and re-running attachSession would silently
+	// replace the live session under it. Protocol error, hang up.
+	p.mu.RLock()
+	_, handshaked := p.connTokens[ctx.Conn()]
+	p.mu.RUnlock()
+	if handshaked {
+		ctx.Close(fmt.Errorf("proto: duplicate HELLO on a handshaked connection"))
+		return
+	}
 	msg, err := DecodeJSONMessage(frame)
 	if err != nil {
 		ctx.Close(fmt.Errorf("proto: malformed HELLO payload: %w", err))

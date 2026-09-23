@@ -539,13 +539,13 @@ func TestNegotiate(t *testing.T) {
 // the client is expected to react to by disconnecting.
 func TestServerHelloPaths(t *testing.T) {
 	addr, _ := startTCPServer(t, nil)
+
+	// supported versions -> ack with the common one. Each path below uses
+	// its own connection: a connection handshakes exactly once.
 	client, err := Dial(addr, nil)
 	if err != nil {
 		t.Fatalf("Dial(): %v", err)
 	}
-	defer client.Close()
-
-	// supported versions -> ack with the common one
 	resp, err := client.roundTrip(HELLO, RESPONSE, "hello", &HelloRequest{Versions: []int{3, ProtocolVersion, 2}}, 2*time.Second)
 	if err != nil {
 		t.Fatalf("HELLO: %v", err)
@@ -563,9 +563,15 @@ func TestServerHelloPaths(t *testing.T) {
 	if len(agreed.Features) == 0 {
 		t.Fatal("HELLO ack carried no features")
 	}
+	_ = client.Close()
 
 	// unsupported offer -> structured error, connection still open
-	resp, err = client.roundTrip(HELLO, RESPONSE, "hello", &HelloRequest{Versions: []int{42}}, 2*time.Second)
+	reject, err := Dial(addr, nil)
+	if err != nil {
+		t.Fatalf("Dial(): %v", err)
+	}
+	defer reject.Close()
+	resp, err = reject.roundTrip(HELLO, RESPONSE, "hello", &HelloRequest{Versions: []int{42}}, 2*time.Second)
 	if err != nil {
 		t.Fatalf("HELLO (unsupported): %v", err)
 	}
@@ -573,8 +579,13 @@ func TestServerHelloPaths(t *testing.T) {
 		t.Fatal("HELLO with unsupported version unexpectedly accepted")
 	}
 
-	// empty offer -> same error path
-	resp, err = client.roundTrip(HELLO, RESPONSE, "hello", &HelloRequest{}, 2*time.Second)
+	// empty offer -> same error path, again on a fresh connection
+	empty, err := Dial(addr, nil)
+	if err != nil {
+		t.Fatalf("Dial(): %v", err)
+	}
+	defer empty.Close()
+	resp, err = empty.roundTrip(HELLO, RESPONSE, "hello", &HelloRequest{}, 2*time.Second)
 	if err != nil {
 		t.Fatalf("HELLO (empty): %v", err)
 	}

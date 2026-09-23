@@ -32,17 +32,19 @@ func echoInitializer(p handler.Pipeline) error {
 }
 
 var (
-	cfgFile    string
-	host       string
-	port       int
-	network    string
-	multicore  bool
-	numWorkers int
-	lockThread bool
-	idleTime   time.Duration
+	cfgFile     string
+	host        string
+	port        int
+	network     string
+	multicore   bool
+	numWorkers  int
+	lockThread  bool
+	idleTime    time.Duration
+	strictHello bool
 )
 
 func runServer() {
+	demoProtocol.RequireHello(viper.GetBool("server.strictHello"))
 	addr := fmt.Sprintf("%s://%s:%d", viper.GetString("server.network"), viper.GetString("server.host"), viper.GetInt("server.port"))
 	options := &reactor.ServerOptions{
 		Multicore:   viper.GetBool("server.multicore"),
@@ -98,6 +100,7 @@ func main() {
 	rootCmd.PersistentFlags().IntVar(&numWorkers, "workers", 10, "number of workers")
 	rootCmd.PersistentFlags().BoolVar(&lockThread, "lockThread", true, "lock thread")
 	rootCmd.PersistentFlags().DurationVar(&idleTime, "idleTimeout", 0, "close connections silent for this long (e.g. 90s; 0 disables)")
+	rootCmd.PersistentFlags().BoolVar(&strictHello, "strictHello", false, "require HELLO as the first frame on every connection")
 
 	// bind
 	err := viper.BindPFlag("server.host", rootCmd.PersistentFlags().Lookup("host"))
@@ -131,6 +134,11 @@ func main() {
 		return
 	}
 	err = viper.BindPFlag("server.idleTimeout", rootCmd.PersistentFlags().Lookup("idleTimeout"))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "bind config error: %s\n", err)
+		return
+	}
+	err = viper.BindPFlag("server.strictHello", rootCmd.PersistentFlags().Lookup("strictHello"))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "bind config error: %s\n", err)
 		return
