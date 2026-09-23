@@ -24,6 +24,46 @@ type ErrorMessage struct {
 	Error string `json:"error"`
 }
 
+// ProtocolVersion is the current wire protocol version. It travels in the
+// HELLO handshake; a peer speaking only older versions is told so and
+// disconnects instead of trading frames neither side can interpret.
+const ProtocolVersion = 1
+
+// supportedVersions lists every version this server speaks. A new version
+// is appended after the old one stays around, so negotiation can pick the
+// best common denominator.
+var supportedVersions = []int{ProtocolVersion}
+
+// protocolFeatures names the capabilities behind this version, so a client
+// can degrade gracefully instead of probing each one.
+var protocolFeatures = []string{"pubsub", "keepalive", "graceful-close"}
+
+// negotiate picks the highest version present in both lists; 0 means the
+// sides share none.
+func negotiate(clientVersions []int) int {
+	best := 0
+	for _, v := range clientVersions {
+		for _, supported := range supportedVersions {
+			if v == supported && v > best {
+				best = v
+			}
+		}
+	}
+	return best
+}
+
+// HelloRequest is the HELLO payload: every version the client can speak.
+type HelloRequest struct {
+	Versions []int `json:"versions"`
+}
+
+// HelloResponse is the handshake reply: the chosen version and what it
+// includes.
+type HelloResponse struct {
+	Version  int      `json:"version"`
+	Features []string `json:"features"`
+}
+
 // ProtocolHandler is the server-side semantic layer on top of the frame
 // codec: it answers requests, keeps topic subscriptions and publishes
 // messages to subscribers. It plugs into the handler pipeline as an inbound
@@ -64,6 +104,8 @@ func (p *ProtocolHandler) HandleRead(ctx handler.InboundContext, message handler
 		return
 	}
 	switch frame.Header.FrameType {
+	case HELLO:
+		p.handleHello(ctx, frame)
 	case REQUEST:
 		p.handleRequestFrame(ctx, frame)
 	case SUBSCRIBE:
@@ -84,6 +126,34 @@ func (p *ProtocolHandler) HandleRead(ctx handler.InboundContext, message handler
 	default:
 		ctx.Close(fmt.Errorf("proto: unexpected frame type %s", frame.Header.FrameType))
 	}
+}
+
+// handleHello answers the version negotiation. The server stays stateless
+// here: it either confirms the best common version or replies with an
+// error response — it is then the client's job to disconnect, because no
+// further frames could be interpreted anyway. A missing or empty versions
+// list is answered the same way: the server cannot guess what a client
+// that offers nothing can understand.
+func (p *ProtocolHandler) handleHello(ctx handler.InboundContext, frame *Frame) {
+	msg, err := DecodeJSONMessage(frame)
+	if err != nil {
+		ctx.Close(fmt.Errorf("proto: malformed HELLO payload: %w", err))
+		return
+	}
+	var req HelloRequest
+	if len(msg.Data) > 0 {
+		if err := json.Unmarshal(msg.Data, &req); err != nil {
+			ctx.Close(fmt.Errorf("proto: malformed HELLO payload: %w", err))
+			return
+		}
+	}
+	chosen := negotiate(req.Versions)
+	if chosen == 0 {
+		p.reply(ctx, RESPONSE, frame.Header.StreamId, "hello",
+			&ErrorMessage{Error: fmt.Sprintf("no common protocol version (client offers %v, server speaks %v)", req.Versions, supportedVersions)})
+		return
+	}
+	p.reply(ctx, RESPONSE, frame.Header.StreamId, "hello", &HelloResponse{Version: chosen, Features: protocolFeatures})
 }
 
 func (p *ProtocolHandler) handleRequestFrame(ctx handler.InboundContext, frame *Frame) {

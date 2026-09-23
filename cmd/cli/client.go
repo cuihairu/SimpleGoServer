@@ -23,6 +23,7 @@ func main() {
 	watch := flag.Duration("watch", 0, "keep running for this long after the request (e.g. 30s)")
 	timeout := flag.Duration("timeout", 5*time.Second, "per-request timeout")
 	keepalive := flag.Duration("keepalive", 30*time.Second, "ping interval, keeps the connection alive through server idle timeouts (0 disables)")
+	hello := flag.Bool("hello", false, "negotiate the protocol version before anything else")
 	flag.Parse()
 
 	eventCh := make(chan *proto.Frame, 16)
@@ -48,6 +49,15 @@ func main() {
 	if *keepalive > 0 {
 		stop := client.KeepAlive(*keepalive, *timeout)
 		defer stop()
+	}
+
+	if *hello {
+		res, err := client.Handshake(*timeout)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "handshake: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("handshake ok: protocol v%d, features %v\n", res.Version, res.Features)
 	}
 
 	if *topic != "" {

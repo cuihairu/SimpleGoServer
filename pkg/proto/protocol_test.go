@@ -508,3 +508,74 @@ func TestClientCallAfterClose(t *testing.T) {
 		t.Fatalf("Call after close = %v, want ErrClosed", err)
 	}
 }
+
+func TestNegotiate(t *testing.T) {
+	cases := []struct {
+		name           string
+		clientVersions []int
+		want           int
+	}{
+		{"exact match", []int{ProtocolVersion}, ProtocolVersion},
+		{"highest common wins", []int{1, 3, 7}, 1}, // server below speaks {1}
+		{"no overlap", []int{2, 3}, 0},
+		{"empty offer", nil, 0},
+		{"duplicates", []int{1, 1}, 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := negotiate(tc.clientVersions); got != tc.want {
+				t.Fatalf("negotiate(%v) = %d, want %d", tc.clientVersions, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestServerHelloPaths drives the server's HELLO handling over a real TCP
+// connection: a supported version is confirmed with the chosen version and
+// feature list, while an unsupported or empty offer gets an error response
+// the client is expected to react to by disconnecting.
+func TestServerHelloPaths(t *testing.T) {
+	addr, _ := startTCPServer(t, nil)
+	client, err := Dial(addr, nil)
+	if err != nil {
+		t.Fatalf("Dial(): %v", err)
+	}
+	defer client.Close()
+
+	// supported versions -> ack with the common one
+	resp, err := client.roundTrip(HELLO, RESPONSE, "hello", &HelloRequest{Versions: []int{3, ProtocolVersion, 2}}, 2*time.Second)
+	if err != nil {
+		t.Fatalf("HELLO: %v", err)
+	}
+	if !resp.OK() {
+		t.Fatalf("HELLO with supported version rejected: %s", resp.Err.Error)
+	}
+	var agreed HelloResponse
+	if err := json.Unmarshal(resp.Data, &agreed); err != nil {
+		t.Fatalf("decode HELLO ack: %v", err)
+	}
+	if agreed.Version != ProtocolVersion {
+		t.Fatalf("negotiated version = %d, want %d", agreed.Version, ProtocolVersion)
+	}
+	if len(agreed.Features) == 0 {
+		t.Fatal("HELLO ack carried no features")
+	}
+
+	// unsupported offer -> structured error, connection still open
+	resp, err = client.roundTrip(HELLO, RESPONSE, "hello", &HelloRequest{Versions: []int{42}}, 2*time.Second)
+	if err != nil {
+		t.Fatalf("HELLO (unsupported): %v", err)
+	}
+	if resp.OK() {
+		t.Fatal("HELLO with unsupported version unexpectedly accepted")
+	}
+
+	// empty offer -> same error path
+	resp, err = client.roundTrip(HELLO, RESPONSE, "hello", &HelloRequest{}, 2*time.Second)
+	if err != nil {
+		t.Fatalf("HELLO (empty): %v", err)
+	}
+	if resp.OK() {
+		t.Fatal("HELLO with empty version list unexpectedly accepted")
+	}
+}

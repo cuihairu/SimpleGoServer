@@ -6,13 +6,14 @@ type FrameType uint8
 
 const (
 	REQUEST     FrameType = iota // 请求，期待同 StreamId 的 RESPONSE
-	RESPONSE                     // 响应，与 REQUEST 通过 StreamId 关联
+	RESPONSE                     // 响应，与 REQUEST/HELLO/SUBSCRIBE 通过 StreamId 关联
 	PUBLISH                      // 发布，向 topic 推送（StreamId 复用为 topic hash，载荷携带 topic）
 	SUBSCRIBE                    // 订阅 topic
 	UNSUBSCRIBE                  // 取消订阅 topic
 	PING                         // 心跳探测
 	PONG                         // 心跳应答
 	CLOSE                        // 优雅关闭通知，对端收到后可主动断开
+	HELLO                        // 握手首帧，协商协议版本（载荷为 versions 列表）
 )
 
 func (t FrameType) String() string {
@@ -33,6 +34,8 @@ func (t FrameType) String() string {
 		return "PONG"
 	case CLOSE:
 		return "CLOSE"
+	case HELLO:
+		return "HELLO"
 	default:
 		return fmt.Sprintf("FrameType(%d)", uint8(t))
 	}

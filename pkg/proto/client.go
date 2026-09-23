@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -43,6 +44,8 @@ type Client struct {
 	nextID  uint32
 	pending map[uint32]chan *Response
 
+	version atomic.Int32 // protocol version agreed in Handshake, 0 if none
+
 	closed   chan struct{}
 	closedMu sync.Once
 }
@@ -67,6 +70,40 @@ func NewClient(conn net.Conn, onEvent EventHandler) *Client {
 	go c.readLoop()
 	return c
 }
+
+// HandshakeResult is what the two sides agreed on during Handshake.
+type HandshakeResult struct {
+	Version  int
+	Features []string
+}
+
+// Handshake negotiates the protocol version: it offers every version this
+// client speaks, the server picks the best common one. On success the
+// result is remembered and NegotiatedVersion reports it; on rejection the
+// client closes itself, since frames the server cannot interpret are
+// pointless. Handshake is optional — the server serves un-negotiated
+// connections exactly as before.
+func (c *Client) Handshake(timeout time.Duration) (*HandshakeResult, error) {
+	resp, err := c.roundTrip(HELLO, RESPONSE, "hello", &HelloRequest{Versions: []int{ProtocolVersion}}, timeout)
+	if err != nil {
+		return nil, err
+	}
+	if !resp.OK() {
+		_ = c.Close()
+		return nil, fmt.Errorf("proto: handshake rejected: %s", resp.Err.Error)
+	}
+	var agreed HelloResponse
+	if err := json.Unmarshal(resp.Data, &agreed); err != nil {
+		_ = c.Close()
+		return nil, fmt.Errorf("proto: malformed handshake response: %w", err)
+	}
+	c.version.Store(int32(agreed.Version))
+	return &HandshakeResult{Version: agreed.Version, Features: agreed.Features}, nil
+}
+
+// NegotiatedVersion reports the protocol version agreed in Handshake, or
+// 0 when the connection never negotiated.
+func (c *Client) NegotiatedVersion() int { return int(c.version.Load()) }
 
 // Call sends a request and waits for the matching response. A zero timeout
 // means wait indefinitely; a timed-out call's late response is discarded.
