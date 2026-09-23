@@ -3,14 +3,17 @@ package reactor
 import (
 	"context"
 	"fmt"
+	"net"
+	"runtime"
+	"sync"
+	"sync/atomic"
+	"time"
+
 	balancerImpl "github.com/cuihairu/simplegoserver/internal/balancer"
 	handlerImpl "github.com/cuihairu/simplegoserver/internal/handler"
 	"github.com/cuihairu/simplegoserver/pkg"
 	"github.com/cuihairu/simplegoserver/pkg/event"
 	"github.com/cuihairu/simplegoserver/pkg/handler"
-	"net"
-	"runtime"
-	"sync/atomic"
 )
 
 type Worker struct {
@@ -22,20 +25,24 @@ type Worker struct {
 	lockThread          bool
 	pipelineInitializer handler.PipelineInitializer
 	eventListener       event.Listener
+	registry            *ConnectionRegistry
+	wg                  *sync.WaitGroup
 }
 
 func (w *Worker) Id() string {
 	return w.id
 }
 
-func (w *Worker) SetCount(count int) {
-
-}
+// SetCount exists to satisfy pkg.CountBackend; the live count is maintained
+// by handleConnection and must not be overwritten by balancers.
+func (w *Worker) SetCount(int) {}
 
 type WorkerGroup struct {
 	balancer      pkg.Balancer[*Worker]
 	opts          pkg.Options
 	eventListener event.Listener
+	registry      *ConnectionRegistry
+	wg            *sync.WaitGroup
 }
 
 func NewWorkerGroup(opts pkg.Options, ctx context.Context, eventListener event.Listener, pipelineInitializer handler.PipelineInitializer, balancer pkg.Balancer[*Worker]) (*WorkerGroup, error) {
@@ -52,9 +59,11 @@ func NewWorkerGroup(opts pkg.Options, ctx context.Context, eventListener event.L
 	if balancer == nil {
 		balancer = balancerImpl.NewLeastConnectionsBalancer[*Worker](false)
 	}
+	registry := NewConnectionRegistry()
+	wg := &sync.WaitGroup{}
 
 	for i := 0; i < serverOptions.NumWorkers; i++ {
-		worker, err := NewWorker(ctx, fmt.Sprintf("worker:%d", i), eventListener, pipelineInitializer, serverOptions.GetLockThread())
+		worker, err := NewWorker(ctx, fmt.Sprintf("worker:%d", i), eventListener, pipelineInitializer, serverOptions.GetLockThread(), registry, wg)
 		if err != nil {
 			eventListener.OnError(err)
 			return nil, err
@@ -65,7 +74,7 @@ func NewWorkerGroup(opts pkg.Options, ctx context.Context, eventListener event.L
 			return nil, err
 		}
 	}
-	return &WorkerGroup{balancer: balancer, eventListener: eventListener}, nil
+	return &WorkerGroup{balancer: balancer, eventListener: eventListener, registry: registry, wg: wg}, nil
 }
 
 func (g *WorkerGroup) Start() {
@@ -84,7 +93,45 @@ func (g *WorkerGroup) Dispatch(conn net.Conn) error {
 	return nil
 }
 
-func NewWorker(parent context.Context, id string, eventListener event.Listener, pipelineInitializer handler.PipelineInitializer, lockThread bool) (*Worker, error) {
+// TotalCount reports the number of connections currently being handled.
+func (g *WorkerGroup) TotalCount() int {
+	total := 0
+	g.balancer.Iterate(func(w *Worker) bool {
+		total += w.Count()
+		return true
+	})
+	return total
+}
+
+func (g *WorkerGroup) Registry() *ConnectionRegistry {
+	return g.registry
+}
+
+func (g *WorkerGroup) Stop() {
+	g.balancer.Iterate(func(w *Worker) bool {
+		_ = w.Stop()
+		return true
+	})
+}
+
+// AwaitDone waits for all in-flight connection goroutines to finish, or
+// until the timeout elapses, and reports whether they finished. Call it only
+// after every worker has stopped, so no new waiters can join the WaitGroup.
+func (g *WorkerGroup) AwaitDone(timeout time.Duration) bool {
+	done := make(chan struct{})
+	go func() {
+		g.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return true
+	case <-time.After(timeout):
+		return false // the Wait goroutine ends once the last handler returns
+	}
+}
+
+func NewWorker(parent context.Context, id string, eventListener event.Listener, pipelineInitializer handler.PipelineInitializer, lockThread bool, registry *ConnectionRegistry, wg *sync.WaitGroup) (*Worker, error) {
 	ctx, cancel := context.WithCancel(parent)
 	return &Worker{
 		ctx:                 ctx,
@@ -94,6 +141,8 @@ func NewWorker(parent context.Context, id string, eventListener event.Listener, 
 		lockThread:          lockThread,
 		pipelineInitializer: pipelineInitializer,
 		eventListener:       eventListener,
+		registry:            registry,
+		wg:                  wg,
 	}, nil
 }
 
@@ -116,6 +165,9 @@ func (w *Worker) Run() {
 	for {
 		select {
 		case c := <-w.newCh:
+			// counting happens before the goroutine starts so a concurrent
+			// AwaitDone can never observe an unregistered in-flight handler
+			w.wg.Add(1)
 			go w.handleConnection(c)
 		case <-w.ctx.Done():
 			w.closePending()
@@ -124,8 +176,8 @@ func (w *Worker) Run() {
 	}
 }
 
-// closePending closes connections still queued in newCh so they are not leaked
-// when the worker stops before dispatching them.
+// closePending closes connections still queued in newCh so they are not
+// leaked when the worker stops before dispatching them.
 func (w *Worker) closePending() {
 	for {
 		select {
@@ -141,8 +193,27 @@ func (w *Worker) Count() int {
 	return int(w.count.Load())
 }
 
+// lifecycleConn watches its own closure so the read loop can tell "handler
+// closed the connection" apart from "keep reading".
+type lifecycleConn struct {
+	net.Conn
+	closed atomic.Bool
+}
+
+func (c *lifecycleConn) Close() error {
+	wasClosed := c.closed.Swap(true)
+	if wasClosed {
+		return nil // idempotent: repeated Close stays a success
+	}
+	return c.Conn.Close()
+}
+
 func (w *Worker) handleConnection(conn net.Conn) {
-	pipeline := handlerImpl.NewPipeline(conn)
+	lc := &lifecycleConn{Conn: conn}
+	w.registry.Add(lc)
+	defer w.wg.Done()
+
+	pipeline := handlerImpl.NewPipeline(lc)
 	err := w.pipelineInitializer(pipeline)
 	if err != nil {
 		w.eventListener.OnError(err)
@@ -150,7 +221,9 @@ func (w *Worker) handleConnection(conn net.Conn) {
 	}
 	w.count.Add(1)
 	defer func() {
-		pipeline.FireInactive(conn.Close())
+		_ = lc.Close()
+		w.registry.Remove(lc)
+		pipeline.FireInactive(nil)
 		w.count.Add(-1)
 	}()
 	defer func() {
@@ -162,9 +235,15 @@ func (w *Worker) handleConnection(conn net.Conn) {
 	for {
 		select {
 		case <-w.ctx.Done():
+			_ = lc.Close()
 			return
 		default:
-			pipeline.FireRead(conn)
+		}
+		pipeline.FireRead(lc)
+		if lc.closed.Load() {
+			// a handler closed the connection (peer EOF, protocol error,
+			// server shutdown); stop reading
+			return
 		}
 	}
 }

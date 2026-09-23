@@ -2,6 +2,7 @@ package reactor
 
 import (
 	"context"
+	"fmt"
 	handlerImpl "github.com/cuihairu/simplegoserver/internal/handler"
 	"github.com/cuihairu/simplegoserver/pkg"
 	"github.com/cuihairu/simplegoserver/pkg/event"
@@ -11,6 +12,8 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"sync"
+	"time"
 )
 
 type SlaveRector struct {
@@ -26,6 +29,7 @@ type Reactor struct {
 	eventListener       event.Listener
 	pipelineInitializer handler.PipelineInitializer
 	logger              *log.Logger
+	stopOnce            sync.Once
 }
 
 var _ event.Group = (*Reactor)(nil)
@@ -107,11 +111,57 @@ func (r *Reactor) Run() {
 	}
 }
 
-// ShutdownGracefully stops accepting new connections and closes the listener.
-func (r *Reactor) ShutdownGracefully() {
-	r.eventListener.OnShutdown()
-	r.Stop()
+// Addr reports the address the reactor is listening on. For a listener
+// bound to port 0 this is the only way to learn the actual port.
+func (r *Reactor) Addr() net.Addr {
+	return r.listener.Addr()
 }
+
+// ShutdownGracefully stops accepting new connections, waits for in-flight
+// connections to finish on their own and force-closes whatever is still
+// open after the drain timeout.
+func (r *Reactor) ShutdownGracefully() {
+	r.ShutdownWithTimeout(defaultDrainTimeout)
+}
+
+// defaultDrainTimeout bounds how long a graceful shutdown waits for
+// existing connections to close themselves.
+const defaultDrainTimeout = 10 * time.Second
+
+// ShutdownWithTimeout runs the graceful shutdown in stages:
+//
+//  1. close the listener — no new connections are accepted;
+//  2. drain — wait up to timeout for existing connections to close
+//     themselves (peer hangup, finished sessions);
+//  3. force close — connections still open are closed, unblocking every
+//     goroutine parked in conn.Read;
+//  4. stop the worker loops and wait briefly for handlers to return;
+//  5. fire the shutdown event.
+func (r *Reactor) ShutdownWithTimeout(timeout time.Duration) error {
+	r.stopOnce.Do(func() {
+		// stage 1: stop accepting
+		_ = r.listener.Close()
+		// stage 2: give existing connections a chance to drain
+		deadline := time.Now().Add(timeout)
+		for r.workers.TotalCount() > 0 && time.Now().Before(deadline) {
+			time.Sleep(10 * time.Millisecond)
+		}
+		// stage 3: force close what is left; this unblocks reads
+		if closed := r.workers.Registry().CloseAll(); closed > 0 {
+			r.eventListener.OnError(fmt.Sprintf("shutdown: force-closed %d connections after drain timeout", closed))
+		}
+		// stage 4: stop worker loops and wait for handlers to return
+		r.cancelFunc()
+		r.workers.Stop()
+		if !r.workers.AwaitDone(handlersExitTimeout) {
+			r.eventListener.OnError("shutdown: handlers did not exit in time")
+		}
+		r.eventListener.OnShutdown()
+	})
+	return nil
+}
+
+const handlersExitTimeout = 5 * time.Second
 
 // Register hands an accepted connection over to the worker group. It lets the
 // reactor be used programmatically instead of through Run.

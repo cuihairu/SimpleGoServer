@@ -1,12 +1,30 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
+
+	"github.com/cuihairu/simplegoserver/pkg/handler"
+	"github.com/cuihairu/simplegoserver/pkg/proto"
 	"github.com/cuihairu/simplegoserver/pkg/reactor"
+	"github.com/cuihairu/simplegoserver/pkg/utils"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
-	"os"
 )
+
+// echoInitializer wires the demo echo service into every connection: the
+// frame codec decodes bytes into frames, the protocol handler answers
+// requests, subscriptions and heartbeats.
+func echoInitializer(p handler.Pipeline) error {
+	_ = p.AddLast(
+		proto.NewFrameCodec(),
+		proto.NewProtocolHandler(func(action string, data []byte) (any, error) {
+			return map[string]any{"action": action, "data": json.RawMessage(data)}, nil
+		}),
+	)
+	return nil
+}
 
 var (
 	cfgFile    string
@@ -26,11 +44,19 @@ func runServer() {
 		Listener:   addr,
 		LockThread: viper.GetBool("server.lockThread"),
 	}
-	newReactor, err := reactor.NewReactor(options, nil, nil, nil, nil)
+	newReactor, err := reactor.NewReactor(options, nil, nil, echoInitializer, nil)
 	if err != nil {
 		panic(err)
 	}
-	newReactor.Run()
+	go func() {
+		newReactor.Run()
+	}()
+
+	// block on signals; SIGINT/SIGTERM trigger the staged graceful shutdown
+	graceful := utils.NewGraceful(func(signal os.Signal) {
+		newReactor.ShutdownGracefully()
+	}, nil)
+	graceful.Wait()
 }
 
 var rootCmd = &cobra.Command{
