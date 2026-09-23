@@ -139,4 +139,3 @@ func collectPushes(pushes <-chan *proto.Frame, forDuration time.Duration) {
 		}
 	}
 }
-
