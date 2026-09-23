@@ -113,8 +113,12 @@ S  -- PUBLISH action="ticks" data=... ------------> C1  （以及 C2、C3…）
 ## 心跳
 
 `PING` 帧立即得到同 StreamId 的 `PONG`；`ProtocolHandler.Stats()` 暴露
-收发计数供监控。当前由客户端按需探测（`client.Ping`）；空闲连接的服务端
-侧主动探活（dead link 检测）是后续扩展点，帧协议本身已预留 `PING`/`PONG`。
+收发计数供监控。客户端可按需探测（`client.Ping`）。
+
+服务端侧的死连接回收由 reactor 层的空闲超时承担：`ServerOptions.IdleTimeout`
+大于 0 时，静默超过该时限的连接被强制关闭（读 deadline 到期），任何收到的
+帧——心跳或业务流量——都会重置计时。因此"心跳保活 + 服务端空闲回收"
+组合起来即可检测并清理拔网线式的半开连接。
 
 ## 优雅关闭
 

@@ -43,6 +43,20 @@ func startTestReactor(tb testing.TB) *Reactor {
 	return reactor
 }
 
+// startTestReactorWithIdle is startTestReactor with dead-link reaping armed.
+func startTestReactorWithIdle(tb testing.TB, idle time.Duration) *Reactor {
+	tb.Helper()
+	opts := newTestOptions(tb)
+	opts.(*ServerOptions).IdleTimeout = idle
+	reactor, err := NewReactor(opts, nil, nil, echoInitializer, nil)
+	if err != nil {
+		tb.Fatalf("NewReactor(): %v", err)
+	}
+	go reactor.Run()
+	tb.Cleanup(func() { _ = reactor.ShutdownWithTimeout(time.Second) })
+	return reactor
+}
+
 func waitListening(tb testing.TB, reactor *Reactor) {
 	tb.Helper()
 	deadline := time.Now().Add(5 * time.Second)
@@ -104,6 +118,56 @@ func TestReactorGracefulShutdownClosesLiveConnections(t *testing.T) {
 	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 	if _, err := conn.Read(make([]byte, 16)); err == nil {
 		t.Fatal("expected the live connection to be closed by shutdown")
+	}
+}
+
+func TestReactorReapsIdleConnections(t *testing.T) {
+	reactor := startTestReactorWithIdle(t, 300*time.Millisecond)
+	waitListening(t, reactor)
+
+	// connect and never send anything: the server must close the dead
+	// connection instead of keeping it forever
+	conn, err := net.Dial("tcp", reactor.Addr().String())
+	if err != nil {
+		t.Fatalf("Dial(): %v", err)
+	}
+	defer conn.Close()
+
+	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	if _, err := conn.Read(make([]byte, 16)); err == nil {
+		t.Fatal("expected the idle connection to be closed by the server")
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if reactor.workers.TotalCount() == 0 {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("idle connection was closed but its handler never exited (count=%d)", reactor.workers.TotalCount())
+}
+
+func TestReactorKeepsActiveConnectionsAlive(t *testing.T) {
+	reactor := startTestReactorWithIdle(t, 300*time.Millisecond)
+	waitListening(t, reactor)
+
+	client, err := proto.Dial(reactor.Addr().String(), nil)
+	if err != nil {
+		t.Fatalf("Dial(): %v", err)
+	}
+	defer client.Close()
+
+	// 10 requests spaced 100ms apart: every request renews the idle
+	// allowance, so the connection must survive far past one idle timeout
+	for i := 0; i < 10; i++ {
+		time.Sleep(100 * time.Millisecond)
+		if _, err := client.Call("echo", "keepalive", 2*time.Second); err != nil {
+			t.Fatalf("call %d failed on a connection that should stay alive: %v", i, err)
+		}
+	}
+	if reactor.workers.TotalCount() != 1 {
+		t.Fatalf("connection count = %d after continuous traffic, want 1", reactor.workers.TotalCount())
 	}
 }
 

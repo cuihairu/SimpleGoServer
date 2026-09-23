@@ -133,7 +133,7 @@ pkg/
   proto/           自定义帧协议（编解码、请求/响应、发布/订阅、客户端）
   handler/         handler 抽象接口
   event/           事件循环抽象
-docs/              设计取舍与协议说明（Analysis.md、Proto.md）
+docs/              设计与数据文档（Analysis.md、Proto.md、Benchmark.md）
 ```
 
-[设计取舍与需求分析说明文档](docs/Analysis.md) ｜ [自定义协议说明](docs/Proto.md)
+[设计取舍与需求分析说明文档](docs/Analysis.md) ｜ [自定义协议说明](docs/Proto.md) ｜ [性能基准](docs/Benchmark.md)

@@ -2,6 +2,7 @@ package proto
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/cuihairu/simplegoserver/pkg/handler"
 	"io"
@@ -288,13 +289,17 @@ var _ handler.OutboundHandler = (*FrameCodec)(nil)
 func (c *FrameCodec) HandleRead(ctx handler.InboundContext, _ handler.Message) {
 	frame, err := Decode(ctx.Conn())
 	if err != nil {
-		// io.EOF is the normal half of a peer close; anything else is a
-		// framing error worth surfacing to the exception handler
-		if err != io.EOF {
+		switch {
+		case errors.Is(err, os.ErrDeadlineExceeded):
+			// the reactor arms a read deadline per idle-timeout period; a
+			// timeout means the peer went silent, so reap the connection
+			c.logger.Printf("reaping idle connection %s", ctx.Conn().RemoteAddr())
+			_ = ctx.Conn().Close()
+		case err != io.EOF:
 			ctx.Close(fmt.Errorf("proto: decode frame: %w", err))
-			return
+		default:
+			_ = ctx.Conn().Close()
 		}
-		_ = ctx.Conn().Close()
 		return
 	}
 	ctx.HandleRead(frame)

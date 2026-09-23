@@ -22,6 +22,7 @@ type Worker struct {
 	count               atomic.Int32
 	id                  string
 	lockThread          bool
+	idleTimeout         time.Duration
 	pipelineInitializer handler.PipelineInitializer
 	eventListener       event.Listener
 	registry            *ConnectionRegistry
@@ -69,7 +70,7 @@ func NewWorkerGroup(opts pkg.Options, ctx context.Context, eventListener event.L
 	group := &WorkerGroup{eventListener: eventListener, registry: registry}
 
 	for i := 0; i < serverOptions.NumWorkers; i++ {
-		worker, err := NewWorker(ctx, fmt.Sprintf("worker:%d", i), eventListener, pipelineInitializer, serverOptions.GetLockThread(), registry, group)
+		worker, err := NewWorker(ctx, fmt.Sprintf("worker:%d", i), eventListener, pipelineInitializer, serverOptions.GetLockThread(), serverOptions.GetIdleTimeout(), registry, group)
 		if err != nil {
 			eventListener.OnError(err)
 			return nil, err
@@ -142,7 +143,7 @@ func (g *WorkerGroup) AwaitDone(timeout time.Duration) bool {
 	return g.active.Load() == 0
 }
 
-func NewWorker(parent context.Context, id string, eventListener event.Listener, pipelineInitializer handler.PipelineInitializer, lockThread bool, registry *ConnectionRegistry, group *WorkerGroup) (*Worker, error) {
+func NewWorker(parent context.Context, id string, eventListener event.Listener, pipelineInitializer handler.PipelineInitializer, lockThread bool, idleTimeout time.Duration, registry *ConnectionRegistry, group *WorkerGroup) (*Worker, error) {
 	ctx, cancel := context.WithCancel(parent)
 	return &Worker{
 		ctx:                 ctx,
@@ -150,6 +151,7 @@ func NewWorker(parent context.Context, id string, eventListener event.Listener, 
 		newCh:               make(chan net.Conn, 100),
 		id:                  id,
 		lockThread:          lockThread,
+		idleTimeout:         idleTimeout,
 		pipelineInitializer: pipelineInitializer,
 		eventListener:       eventListener,
 		registry:            registry,
@@ -263,6 +265,12 @@ func (w *Worker) handleConnection(lc *lifecycleConn) {
 			_ = lc.Close()
 			return
 		default:
+		}
+		if w.idleTimeout > 0 {
+			// dead-link reaping: a silent connection's blocked read returns
+			// ErrDeadlineExceeded once the deadline passes and the codec
+			// closes it; every received frame renews the allowance here
+			_ = lc.SetReadDeadline(time.Now().Add(w.idleTimeout))
 		}
 		pipeline.FireRead(lc)
 		if lc.closed.Load() {

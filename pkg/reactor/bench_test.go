@@ -2,11 +2,43 @@ package reactor
 
 import (
 	"fmt"
+	"io"
+	"log"
+	"net"
 	"testing"
 	"time"
 
+	"github.com/cuihairu/simplegoserver/pkg/event"
 	"github.com/cuihairu/simplegoserver/pkg/proto"
 )
+
+// silentListener and the discard logger keep benchmark output clean: the
+// default error handler logs every accept and lifecycle event to stdout,
+// which interleaves with benchmark result lines.
+type silentListener struct{}
+
+func (silentListener) OnStartup()         {}
+func (silentListener) OnReload()          {}
+func (silentListener) OnShutdown()        {}
+func (silentListener) OnError(any)        {}
+func (silentListener) OnConnect(net.Conn) {}
+
+var _ event.Listener = silentListener{}
+
+// startBenchReactor is startTestReactor with all logging silenced so the
+// benchmark results stay machine-parseable.
+func startBenchReactor(b *testing.B) *Reactor {
+	b.Helper()
+	opts := newTestOptions(b)
+	reactor, err := NewReactor(opts, log.New(io.Discard, "", 0), silentListener{}, echoInitializer, nil)
+	if err != nil {
+		b.Fatalf("NewReactor(): %v", err)
+	}
+	go reactor.Run()
+	b.Cleanup(func() { _ = reactor.ShutdownWithTimeout(time.Second) })
+	waitListening(b, reactor)
+	return reactor
+}
 
 // oneEchoCall performs one request/response round trip and fails the
 // benchmark if it does not complete cleanly.
@@ -27,7 +59,7 @@ func oneEchoCall(b *testing.B, client *proto.Client) {
 //
 //	go test ./pkg/reactor -bench EchoThroughput -benchmem
 func BenchmarkReactorEchoThroughput(b *testing.B) {
-	reactor := startTestReactor(b)
+	reactor := startBenchReactor(b)
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		client, err := proto.Dial(reactor.Addr().String(), nil)
@@ -45,7 +77,7 @@ func BenchmarkReactorEchoThroughput(b *testing.B) {
 // BenchmarkReactorEchoClients reports throughput at fixed client counts so
 // the effect of concurrency on the reactor is comparable across runs.
 func BenchmarkReactorEchoClients(b *testing.B) {
-	reactor := startTestReactor(b)
+	reactor := startBenchReactor(b)
 	for _, clients := range []int{1, 8, 64} {
 		b.Run(fmt.Sprintf("clients=%d", clients), func(b *testing.B) {
 			per := b.N / clients
@@ -90,7 +122,7 @@ func BenchmarkReactorEchoClients(b *testing.B) {
 // closes it. This is the cost profile of clients that do not keep
 // connections alive.
 func BenchmarkReactorConnChurn(b *testing.B) {
-	reactor := startTestReactor(b)
+	reactor := startBenchReactor(b)
 	addr := reactor.Addr().String()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
