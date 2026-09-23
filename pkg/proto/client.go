@@ -92,17 +92,19 @@ type HandshakeResult struct {
 
 // Handshake negotiates the protocol version and opens a fresh session.
 func (c *Client) Handshake(timeout time.Duration) (*HandshakeResult, error) {
-	return c.HandshakeWith("", timeout)
+	return c.HandshakeWith("", nil, timeout)
 }
 
 // HandshakeWith negotiates the protocol version; on a reconnect, passing
-// the Token of the dropped connection also restores its subscriptions. On
-// success the result is remembered and NegotiatedVersion reports the
-// version; on rejection the client closes itself, since frames the server
-// cannot interpret are pointless. Handshaking is optional — the server
-// serves un-negotiated connections exactly as before.
-func (c *Client) HandshakeWith(session string, timeout time.Duration) (*HandshakeResult, error) {
-	req := &HelloRequest{Versions: []int{ProtocolVersion}}
+// the Token of the dropped connection also restores its subscriptions, and
+// the per-topic Cursors (last seen publish sequence numbers) make the
+// server replay the publishes missed while disconnected. On success the
+// result is remembered and NegotiatedVersion reports the version; on
+// rejection the client closes itself, since frames the server cannot
+// interpret are pointless. Handshaking is optional — the server serves
+// un-negotiated connections exactly as before.
+func (c *Client) HandshakeWith(session string, cursors map[string]uint64, timeout time.Duration) (*HandshakeResult, error) {
+	req := &HelloRequest{Versions: []int{ProtocolVersion}, Cursors: cursors}
 	if session != "" {
 		req.Resume = session
 	}

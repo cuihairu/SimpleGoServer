@@ -615,7 +615,7 @@ func TestClientResumeRestoresSubscriptions(t *testing.T) {
 		t.Fatalf("re-Dial(): %v", err)
 	}
 	defer c2.Close()
-	res2, err := c2.HandshakeWith(res1.Token, 2*time.Second)
+	res2, err := c2.HandshakeWith(res1.Token, nil, 2*time.Second)
 	if err != nil {
 		t.Fatalf("resume Handshake(): %v", err)
 	}
@@ -653,7 +653,7 @@ func TestClientResumeUnknownTokenStartsFresh(t *testing.T) {
 		t.Fatalf("Dial(): %v", err)
 	}
 	defer client.Close()
-	res, err := client.HandshakeWith("no-such-token", 2*time.Second)
+	res, err := client.HandshakeWith("no-such-token", nil, 2*time.Second)
 	if err != nil {
 		t.Fatalf("HandshakeWith(): %v", err)
 	}
@@ -690,7 +690,7 @@ func TestClientResumeExpiredSessionIsFresh(t *testing.T) {
 		t.Fatalf("re-Dial(): %v", err)
 	}
 	defer client.Close()
-	res2, err := client.HandshakeWith(res1.Token, 2*time.Second)
+	res2, err := client.HandshakeWith(res1.Token, nil, 2*time.Second)
 	if err != nil {
 		t.Fatalf("resume Handshake(): %v", err)
 	}
@@ -699,11 +699,12 @@ func TestClientResumeExpiredSessionIsFresh(t *testing.T) {
 	}
 }
 
-// TestDroppedSubscriberDoesNotReviveOnResume verifies the accounting
-// behind resume: when Publish drops a subscriber that cannot keep up, the
-// topic must leave the session too, so a later resume does not silently
-// re-subscribe the client.
-func TestDroppedSubscriberDoesNotReviveOnResume(t *testing.T) {
+// TestDroppedSubscriberRevivesOnResume verifies the accounting behind
+// resume: a write failure drops the transport from the subscription table
+// (TCP semantics force repeated publishes until the server notices), but
+// the session keeps the subscription intent, so reconnecting restores it
+// — the client wanted the topic and never said otherwise.
+func TestDroppedSubscriberRevivesOnResume(t *testing.T) {
 	addr, ph := startTCPServer(t, nil)
 
 	c1, err := Dial(addr, nil)
@@ -727,12 +728,8 @@ func TestDroppedSubscriberDoesNotReviveOnResume(t *testing.T) {
 		_, _ = ph.Publish("ticks", "x")
 		time.Sleep(10 * time.Millisecond)
 	}
-	ph.mu.RLock()
-	s := ph.sessions[res1.Token]
-	_, stillRecorded := s.topics["ticks"]
-	ph.mu.RUnlock()
-	if stillRecorded {
-		t.Fatal("dropped topic is still recorded in the session")
+	if got := ph.Subscribers("ticks"); got != 0 {
+		t.Fatalf("subscribers = %d after the transport died, want 0", got)
 	}
 
 	c2, err := Dial(addr, nil)
@@ -740,11 +737,247 @@ func TestDroppedSubscriberDoesNotReviveOnResume(t *testing.T) {
 		t.Fatalf("re-Dial(): %v", err)
 	}
 	defer c2.Close()
-	res2, err := c2.HandshakeWith(res1.Token, 2*time.Second)
+	res2, err := c2.HandshakeWith(res1.Token, nil, 2*time.Second)
 	if err != nil {
 		t.Fatalf("resume Handshake(): %v", err)
 	}
-	if !res2.Resumed || ph.Subscribers("ticks") != 0 {
-		t.Fatalf("resumed=%v subscribers=%d, want the session back without the dropped topic", res2.Resumed, ph.Subscribers("ticks"))
+	if !res2.Resumed {
+		t.Fatal("resume not recognized")
+	}
+	if got := ph.Subscribers("ticks"); got != 1 {
+		t.Fatalf("subscribers after resume = %d, want 1 — the session kept the intent", got)
+	}
+}
+
+// collectPublishes drains pushed publish frames (action, sequence) until
+// the deadline, for replay assertions.
+func collectPublishes(pushes <-chan *Frame, n int, timeout time.Duration) ([]uint32, bool) {
+	var seqs []uint32
+	deadline := time.After(timeout)
+	for len(seqs) < n {
+		select {
+		case frame := <-pushes:
+			seqs = append(seqs, frame.Header.StreamId)
+		case <-deadline:
+			return seqs, false
+		}
+	}
+	return seqs, true
+}
+
+// TestResumeReplaysMissedPublishes covers the offline catch-up: publishes
+// that happened while the client was disconnected are replayed in order
+// right after the resume handshake, ahead of live traffic.
+func TestResumeReplaysMissedPublishes(t *testing.T) {
+	addr, ph := startTCPServer(t, nil)
+
+	pushes1 := make(chan *Frame, 8)
+	c1, err := Dial(addr, func(f *Frame) { pushes1 <- f })
+	if err != nil {
+		t.Fatalf("Dial(): %v", err)
+	}
+	res1, err := c1.Handshake(2 * time.Second)
+	if err != nil {
+		t.Fatalf("Handshake(): %v", err)
+	}
+	if err := c1.Subscribe("ticks", 2*time.Second); err != nil {
+		t.Fatalf("Subscribe(): %v", err)
+	}
+
+	// publish #1 while connected: the client sees it live
+	if _, err := ph.Publish("ticks", "first"); err != nil {
+		t.Fatalf("Publish 1: %v", err)
+	}
+	live := <-pushes1
+	cursor := uint64(live.Header.StreamId)
+
+	// the drop; publishes #2 and #3 happen while nobody is listening
+	_ = c1.Close()
+	if _, err := ph.Publish("ticks", "second"); err != nil {
+		t.Fatalf("Publish 2: %v", err)
+	}
+	if _, err := ph.Publish("ticks", "third"); err != nil {
+		t.Fatalf("Publish 3: %v", err)
+	}
+
+	// reconnect presenting the token and the cursor of publish #1
+	pushes2 := make(chan *Frame, 8)
+	c2, err := Dial(addr, func(f *Frame) { pushes2 <- f })
+	if err != nil {
+		t.Fatalf("re-Dial(): %v", err)
+	}
+	defer c2.Close()
+	res2, err := c2.HandshakeWith(res1.Token, map[string]uint64{"ticks": cursor}, 2*time.Second)
+	if err != nil {
+		t.Fatalf("resume Handshake(): %v", err)
+	}
+	if !res2.Resumed {
+		t.Fatal("resume not recognized")
+	}
+
+	// the two missed publishes arrive as replay...
+	seqs, ok := collectPublishes(pushes2, 2, 2*time.Second)
+	if !ok {
+		t.Fatalf("expected 2 replayed publishes, got %d (seqs=%v)", len(seqs), seqs)
+	}
+	if seqs[0] <= uint32(cursor) || seqs[1] <= seqs[0] {
+		t.Fatalf("replay out of order or behind cursor: cursor=%d seqs=%v", cursor, seqs)
+	}
+	// ...and a live publish afterwards keeps the sequence going
+	if _, err := ph.Publish("ticks", "fourth"); err != nil {
+		t.Fatalf("Publish 4: %v", err)
+	}
+	later, ok := collectPublishes(pushes2, 1, 2*time.Second)
+	if !ok {
+		t.Fatal("no live publish after replay")
+	}
+	if later[0] <= seqs[1] {
+		t.Fatalf("live publish seq %d not after replay %d", later[0], seqs[1])
+	}
+}
+
+// TestResumeWithFreshCursorReplaysNothing checks that a client reporting
+// it has seen everything is not spammed with duplicates.
+func TestResumeWithFreshCursorReplaysNothing(t *testing.T) {
+	addr, ph := startTCPServer(t, nil)
+
+	pushes1 := make(chan *Frame, 8)
+	c1, err := Dial(addr, func(f *Frame) { pushes1 <- f })
+	if err != nil {
+		t.Fatalf("Dial(): %v", err)
+	}
+	res1, err := c1.Handshake(2 * time.Second)
+	if err != nil {
+		t.Fatalf("Handshake(): %v", err)
+	}
+	if err := c1.Subscribe("ticks", 2*time.Second); err != nil {
+		t.Fatalf("Subscribe(): %v", err)
+	}
+	if _, err := ph.Publish("ticks", "seen"); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	seen := <-pushes1
+	_ = c1.Close()
+
+	// cursor at the last seen sequence: nothing to replay
+	pushes2 := make(chan *Frame, 8)
+	c2, err := Dial(addr, func(f *Frame) { pushes2 <- f })
+	if err != nil {
+		t.Fatalf("re-Dial(): %v", err)
+	}
+	defer c2.Close()
+	if _, err := c2.HandshakeWith(res1.Token, map[string]uint64{"ticks": uint64(seen.Header.StreamId)}, 2*time.Second); err != nil {
+		t.Fatalf("resume Handshake(): %v", err)
+	}
+	select {
+	case frame := <-pushes2:
+		t.Fatalf("unexpected replay of seq %d the client already saw", frame.Header.StreamId)
+	case <-time.After(300 * time.Millisecond):
+	}
+}
+
+// TestPublishCachesWhileNoSubscriberConnected pins the offline-cache
+// invariant: once the dead transport is reaped and the subscriber set is
+// empty, publishes keep being cached while a session still records the
+// topic — otherwise everything after the drop would be silently lost
+// instead of replayed on resume.
+func TestPublishCachesWhileNoSubscriberConnected(t *testing.T) {
+	addr, ph := startTCPServer(t, nil)
+
+	pushes1 := make(chan *Frame, 8)
+	c1, err := Dial(addr, func(f *Frame) { pushes1 <- f })
+	if err != nil {
+		t.Fatalf("Dial(): %v", err)
+	}
+	res1, err := c1.Handshake(2 * time.Second)
+	if err != nil {
+		t.Fatalf("Handshake(): %v", err)
+	}
+	if err := c1.Subscribe("ticks", 2*time.Second); err != nil {
+		t.Fatalf("Subscribe(): %v", err)
+	}
+	if _, err := ph.Publish("ticks", "live"); err != nil {
+		t.Fatalf("Publish live: %v", err)
+	}
+	cursor := uint64((<-pushes1).Header.StreamId)
+
+	// drop; keep publishing until the server has observed the write
+	// failure and reaped the dead subscriber (see the TCP note above)
+	_ = c1.Close()
+	deadline := time.Now().Add(2 * time.Second)
+	for ph.Subscribers("ticks") > 0 && time.Now().Before(deadline) {
+		_, _ = ph.Publish("ticks", "x")
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := ph.Subscribers("ticks"); got != 0 {
+		t.Fatalf("subscribers = %d after the transport died, want 0", got)
+	}
+
+	// nobody connected from here on, yet both publishes must be cached
+	if _, err := ph.Publish("ticks", "offline 1"); err != nil {
+		t.Fatalf("Publish offline 1: %v", err)
+	}
+	if _, err := ph.Publish("ticks", "offline 2"); err != nil {
+		t.Fatalf("Publish offline 2: %v", err)
+	}
+
+	pushes2 := make(chan *Frame, 8)
+	c2, err := Dial(addr, func(f *Frame) { pushes2 <- f })
+	if err != nil {
+		t.Fatalf("re-Dial(): %v", err)
+	}
+	defer c2.Close()
+	res2, err := c2.HandshakeWith(res1.Token, map[string]uint64{"ticks": cursor}, 2*time.Second)
+	if err != nil {
+		t.Fatalf("resume Handshake(): %v", err)
+	}
+	if !res2.Resumed {
+		t.Fatal("resume not recognized")
+	}
+	seqs, ok := collectPublishes(pushes2, 2, 2*time.Second)
+	if !ok {
+		t.Fatalf("expected 2 replayed publishes with no subscriber connected, got %d (seqs=%v)", len(seqs), seqs)
+	}
+}
+
+// TestTopicCacheEviction pins the cache bound: publishing past the cache
+// size keeps only the most recent entries.
+func TestTopicCacheEviction(t *testing.T) {
+	addr, ph := startTCPServer(t, nil)
+	pushes := make(chan *Frame, 1)
+	c, err := Dial(addr, func(f *Frame) { pushes <- f })
+	if err != nil {
+		t.Fatalf("Dial(): %v", err)
+	}
+	defer c.Close()
+	if err := c.Subscribe("ticks", 2*time.Second); err != nil {
+		t.Fatalf("Subscribe(): %v", err)
+	}
+	// drain live pushes so the channel never blocks Publish
+	go func() {
+		for range pushes {
+		}
+	}()
+
+	total := topicCacheSize + 10
+	for i := 0; i < total; i++ {
+		if _, err := ph.Publish("ticks", i); err != nil {
+			t.Fatalf("Publish %d: %v", i, err)
+		}
+	}
+	ph.mu.RLock()
+	cache := ph.topicCache["ticks"]
+	ph.mu.RUnlock()
+	if len(cache) != topicCacheSize {
+		t.Fatalf("cache holds %d entries, want %d", len(cache), topicCacheSize)
+	}
+	// the retained entries are the most recent ones, in order
+	for i := 1; i < len(cache); i++ {
+		if cache[i].seq <= cache[i-1].seq {
+			t.Fatalf("cache not monotonic at %d: %v", i, cache)
+		}
+	}
+	if cache[len(cache)-1].seq != uint32(total) {
+		t.Fatalf("newest cached seq = %d, want %d", cache[len(cache)-1].seq, total)
 	}
 }

@@ -62,9 +62,40 @@ type ResilientClient struct {
 	client     *Client
 	token      string
 	subscribed map[string]struct{}
+	cursors    map[string]uint64 // topic -> last seen publish sequence
 	closed     bool
 	done       chan struct{}
 	closeOnce  sync.Once
+}
+
+// recordCursor notes the sequence number of a publish as the replay cursor
+// for its topic. Called for every publish before the user handler sees it,
+// so a panicking or slow handler cannot lose the update.
+func (rc *ResilientClient) recordCursor(frame *Frame) {
+	if frame.Header.FrameType != PUBLISH {
+		return
+	}
+	msg, err := DecodeJSONMessage(frame)
+	if err != nil {
+		return
+	}
+	rc.mu.Lock()
+	rc.cursors[msg.Action] = uint64(frame.Header.StreamId)
+	rc.mu.Unlock()
+}
+
+// snapshotCursors copies the cursor table for the resume handshake.
+func (rc *ResilientClient) snapshotCursors() map[string]uint64 {
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
+	if len(rc.cursors) == 0 {
+		return nil
+	}
+	out := make(map[string]uint64, len(rc.cursors))
+	for topic, seq := range rc.cursors {
+		out[topic] = seq
+	}
+	return out
 }
 
 // NewResilientClient creates the client; it does not connect until Connect
@@ -73,13 +104,22 @@ func NewResilientClient(addr string, onEvent EventHandler, opts *ResilientOption
 	if opts == nil {
 		opts = &ResilientOptions{}
 	}
-	return &ResilientClient{
+	rc := &ResilientClient{
 		addr:       addr,
-		onEvent:    onEvent,
 		opts:       opts,
 		subscribed: make(map[string]struct{}),
+		cursors:    make(map[string]uint64),
 		done:       make(chan struct{}),
 	}
+	// every publish updates the replay cursor before the user handler
+	// runs, so reconnects know exactly where the client left off
+	rc.onEvent = func(frame *Frame) {
+		rc.recordCursor(frame)
+		if onEvent != nil {
+			onEvent(frame)
+		}
+	}
+	return rc
 }
 
 // Connect dials and handshakes, blocking until the client is ready. It is
@@ -205,7 +245,8 @@ func (rc *ResilientClient) current() (*Client, error) {
 	return rc.client, nil
 }
 
-// dialAndHandshake opens a connection and resumes the remembered session.
+// dialAndHandshake opens a connection and resumes the remembered session,
+// reporting the replay cursors so missed publishes are sent again.
 func (rc *ResilientClient) dialAndHandshake(timeout time.Duration) (*Client, *HandshakeResult, error) {
 	c, err := Dial(rc.addr, rc.onEvent)
 	if err != nil {
@@ -214,7 +255,7 @@ func (rc *ResilientClient) dialAndHandshake(timeout time.Duration) (*Client, *Ha
 	rc.mu.Lock()
 	token := rc.token
 	rc.mu.Unlock()
-	res, err := c.HandshakeWith(token, timeout)
+	res, err := c.HandshakeWith(token, rc.snapshotCursors(), timeout)
 	if err != nil {
 		_ = c.Close() // do not leak the connection on a rejected handshake
 		return nil, nil, err

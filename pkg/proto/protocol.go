@@ -55,10 +55,13 @@ func negotiate(clientVersions []int) int {
 }
 
 // HelloRequest is the HELLO payload: every version the client can speak,
-// plus — on a reconnect — the session token it wants to resume.
+// plus — on a reconnect — the session token it wants to resume and, per
+// topic, the sequence number of the last publish it received so the
+// server can replay what was missed.
 type HelloRequest struct {
-	Versions []int  `json:"versions"`
-	Resume   string `json:"resume,omitempty"`
+	Versions []int             `json:"versions"`
+	Resume   string            `json:"resume,omitempty"`
+	Cursors  map[string]uint64 `json:"cursors,omitempty"`
 }
 
 // HelloResponse is the handshake reply: the chosen version, what it
@@ -90,9 +93,27 @@ type ProtocolHandler struct {
 	sessions   map[string]*session
 	connTokens map[net.Conn]string
 
+	// topicCache remembers the most recent publishes per topic so a
+	// resumed session can be caught up on what it missed while
+	// disconnected. Entries exist only while the topic has subscribers.
+	topicCache map[string][]cachedPublish
+
 	closed     chan struct{}
 	closeOnce  sync.Once
 	sessionTTL time.Duration
+}
+
+// topicCacheSize bounds how many recent publishes are kept per topic for
+// replaying to resumed sessions. Older ones are dropped: delivery stays
+// best-effort, a client that was away for too long simply misses them.
+const topicCacheSize = 64
+
+// cachedPublish is one replayable publish: the wire-encoded frame (its
+// StreamId doubles as the monotonically increasing sequence number) kept
+// alongside the sequence for quick cursor comparisons.
+type cachedPublish struct {
+	seq uint32
+	buf []byte
 }
 
 // session is the server-side memory of one logical connection. It outlives
@@ -122,6 +143,7 @@ func NewProtocolHandler(handleRequest RequestHandler) *ProtocolHandler {
 		subs:          make(map[string]map[net.Conn]struct{}),
 		sessions:      make(map[string]*session),
 		connTokens:    make(map[net.Conn]string),
+		topicCache:    make(map[string][]cachedPublish),
 		closed:        make(chan struct{}),
 		sessionTTL:    defaultSessionTTL,
 	}
@@ -237,7 +259,11 @@ func (p *ProtocolHandler) handleHello(ctx handler.InboundContext, frame *Frame) 
 			&ErrorMessage{Error: fmt.Sprintf("no common protocol version (client offers %v, server speaks %v)", req.Versions, supportedVersions)})
 		return
 	}
-	token, resumed := p.attachSession(ctx.Conn(), req.Resume)
+	token, resumed, replay := p.attachSession(ctx.Conn(), req.Resume, req.Cursors)
+	// replay BEFORE the ack: when the client's Handshake returns it can
+	// rely on the catch-up already being on the wire, and replayed frames
+	// never race live publishes written after the ack
+	p.replayTo(ctx.Conn(), replay)
 	p.reply(ctx, RESPONSE, frame.Header.StreamId, "hello", &HelloResponse{
 		Version:  chosen,
 		Features: protocolFeatures,
@@ -246,11 +272,26 @@ func (p *ProtocolHandler) handleHello(ctx handler.InboundContext, frame *Frame) 
 	})
 }
 
+// replayTo catches a just-resumed connection up on the publishes it missed,
+// in sequence order. A failing write abandons the replay: the connection
+// is presumably going away, and live publishes will reap it properly.
+func (p *ProtocolHandler) replayTo(conn net.Conn, replay [][]byte) {
+	for _, buf := range replay {
+		_ = conn.SetWriteDeadline(time.Now().Add(publishWriteTimeout))
+		if _, err := conn.Write(buf); err != nil {
+			_ = conn.SetWriteDeadline(time.Time{})
+			return
+		}
+		_ = conn.SetWriteDeadline(time.Time{})
+	}
+}
+
 // attachSession binds conn to its session: it resumes the session named by
 // the token (moving its recorded topics onto conn and dropping the dead
 // transport), or mints a fresh session. The returned flag reports whether
-// an existing session was resumed.
-func (p *ProtocolHandler) attachSession(conn net.Conn, token string) (string, bool) {
+// an existing session was resumed; replay carries the wire frames of the
+// cached publishes the client has not seen yet, ordered by sequence.
+func (p *ProtocolHandler) attachSession(conn net.Conn, token string, cursors map[string]uint64) (string, bool, [][]byte) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -271,7 +312,7 @@ func (p *ProtocolHandler) attachSession(conn net.Conn, token string) (string, bo
 			s.conn = conn
 			s.lastSeen = time.Now()
 			p.connTokens[conn] = token
-			return token, true
+			return token, true, p.collectReplay(s, cursors)
 		}
 		// unknown, expired or empty: fall through to a fresh session
 	}
@@ -279,7 +320,63 @@ func (p *ProtocolHandler) attachSession(conn net.Conn, token string) (string, bo
 	token = newSessionToken()
 	p.sessions[token] = &session{conn: conn, topics: make(map[string]struct{}), lastSeen: time.Now()}
 	p.connTokens[conn] = token
-	return token, false
+	return token, false, nil
+}
+
+// collectReplay picks the cached publishes of the session's topics that
+// are newer than the client's cursor, oldest first. Topics without a
+// cursor get everything the cache holds; a topic whose cache no longer
+// exists (e.g. all subscribers left) simply has nothing to replay.
+func (p *ProtocolHandler) collectReplay(s *session, cursors map[string]uint64) [][]byte {
+	var replay [][]byte
+	for topic := range s.topics {
+		cursor := cursors[topic] // missing entry means "nothing seen yet"
+		for _, cached := range p.topicCache[topic] {
+			if uint64(cached.seq) > cursor {
+				replay = append(replay, cached.buf)
+			}
+		}
+	}
+	return replay
+}
+
+// rememberPublish stores a wire frame in the topic cache, evicting the
+// oldest entry past the cache size.
+func (p *ProtocolHandler) rememberPublish(topic string, seq uint32, buf []byte) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	cache := append(p.topicCache[topic], cachedPublish{seq: seq, buf: buf})
+	if len(cache) > topicCacheSize {
+		cache = cache[len(cache)-topicCacheSize:]
+	}
+	p.topicCache[topic] = cache
+}
+
+// dropTopicCacheLocked forgets a topic's replay cache once nothing needs
+// it anymore: no live subscriber and no session — including disconnected
+// ones that may resume and expect the catch-up — records the topic. This
+// is what keeps the cache alive exactly while someone could still come
+// back for it.
+func (p *ProtocolHandler) dropTopicCacheLocked(topic string) {
+	if members, ok := p.subs[topic]; ok && len(members) > 0 {
+		return
+	}
+	if p.sessionRecordsTopicLocked(topic) {
+		return
+	}
+	delete(p.topicCache, topic)
+}
+
+// sessionRecordsTopicLocked reports whether any session — including a
+// disconnected one that may resume and expect the catch-up — still records
+// the topic.
+func (p *ProtocolHandler) sessionRecordsTopicLocked(topic string) bool {
+	for _, s := range p.sessions {
+		if _, ok := s.topics[topic]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func (p *ProtocolHandler) handleRequestFrame(ctx handler.InboundContext, frame *Frame) {
@@ -335,6 +432,7 @@ func (p *ProtocolHandler) handleSubscribe(ctx handler.InboundContext, frame *Fra
 		delete(members, ctx.Conn())
 		if len(members) == 0 {
 			delete(p.subs, topic)
+			p.dropTopicCacheLocked(topic)
 		}
 	}
 	// record the change in the connection's session, so a reconnect with
@@ -389,8 +487,12 @@ func (p *ProtocolHandler) Publish(topic string, payload any) (int, error) {
 	for conn := range p.subs[topic] {
 		members = append(members, conn)
 	}
+	// a disconnected session that still records the topic may resume and
+	// ask for the catch-up, so its publishes must be cached even while
+	// nobody is connected to receive them
+	offline := p.sessionRecordsTopicLocked(topic)
 	p.mu.RUnlock()
-	if len(members) == 0 {
+	if len(members) == 0 && !offline {
 		return 0, nil
 	}
 
@@ -399,6 +501,10 @@ func (p *ProtocolHandler) Publish(topic string, payload any) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	// the publish exists the moment it is encoded: cache it for replaying
+	// to sessions that reconnect later, whether this round reaches
+	// everyone or not
+	p.rememberPublish(topic, frame.Header.StreamId, buf)
 	delivered := 0
 	for _, conn := range members {
 		// transient deadline: cleared afterwards so normal response writes
@@ -440,12 +546,12 @@ func (p *ProtocolHandler) removeSubscriber(topic string, conn net.Conn) {
 			delete(p.subs, topic)
 		}
 	}
-	// a dropped subscriber must not come back to life on resume
-	if token, ok := p.connTokens[conn]; ok {
-		if s := p.sessions[token]; s != nil {
-			delete(s.topics, topic)
-		}
-	}
+	// The session recording is deliberately NOT touched here: a write
+	// failure means the transport died (or stalled), not that the client
+	// stopped wanting the subscription. The session keeps the intent, and
+	// a resume moves it onto the new transport — cleaning the dead one —
+	// by itself. Only an explicit UNSUBSCRIBE removes the recording.
+	p.dropTopicCacheLocked(topic)
 }
 
 // Subscribers returns the current subscriber count of a topic.
