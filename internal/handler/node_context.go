@@ -50,7 +50,10 @@ func (n *NodeContext) Write(message handler.Message) {
 			n.pipeline.FireException(err)
 		}
 	}()
-	for cur := n; cur != nil; cur = cur.prev {
+	// start at the previous node: writing from a context propagates towards
+	// the head, skipping the handler that owns this context — matching the
+	// outbound semantics of Netty and avoiding self re-entry
+	for cur := n.prev; cur != nil; cur = cur.prev {
 		if cur.outboundHandler != nil {
 			cur.outboundHandler.HandleWrite(cur, message)
 			break
@@ -75,7 +78,9 @@ func (n *NodeContext) SetAttachment(attachment handler.Attachment) {
 var _ handler.ActiveContext = (*NodeContext)(nil)
 
 func (n *NodeContext) HandleActive() {
-	for cur := n; cur != nil; cur = cur.next {
+	// inbound propagation starts at the next node, skipping the handler
+	// that owns this context (Netty semantics)
+	for cur := n.next; cur != nil; cur = cur.next {
 		if cur.activeHandler != nil {
 			cur.activeHandler.HandleActive(cur)
 			break
@@ -86,7 +91,8 @@ func (n *NodeContext) HandleActive() {
 var _ handler.InboundContext = (*NodeContext)(nil)
 
 func (n *NodeContext) HandleRead(message handler.Message) {
-	for cur := n; cur != nil; cur = cur.next {
+	// see HandleActive: skip self when propagating inbound
+	for cur := n.next; cur != nil; cur = cur.next {
 		if cur.inboundHandler != nil {
 			cur.inboundHandler.HandleRead(cur, message)
 			break
@@ -97,7 +103,8 @@ func (n *NodeContext) HandleRead(message handler.Message) {
 var _ handler.OutboundContext = (*NodeContext)(nil)
 
 func (n *NodeContext) HandleWrite(message handler.Message) {
-	for cur := n; cur != nil; cur = cur.prev {
+	// see Write: outbound propagation starts at the previous node
+	for cur := n.prev; cur != nil; cur = cur.prev {
 		if cur.outboundHandler != nil {
 			cur.outboundHandler.HandleWrite(cur, message)
 			break
@@ -108,7 +115,8 @@ func (n *NodeContext) HandleWrite(message handler.Message) {
 var _ handler.ExceptionContext = (*NodeContext)(nil)
 
 func (n *NodeContext) HandleException(ex handler.Exception) {
-	for cur := n; cur != nil; cur = cur.next {
+	// see HandleActive: skip self when propagating inbound
+	for cur := n.next; cur != nil; cur = cur.next {
 		if cur.exceptionHandler != nil {
 			cur.exceptionHandler.HandleException(cur, ex)
 			break
@@ -119,7 +127,8 @@ func (n *NodeContext) HandleException(ex handler.Exception) {
 var _ handler.InactiveContext = (*NodeContext)(nil)
 
 func (n *NodeContext) HandleInactive(ex handler.Exception) {
-	for cur := n; cur != nil; cur = cur.next {
+	// see HandleActive: skip self when propagating inbound
+	for cur := n.next; cur != nil; cur = cur.next {
 		if cur.inactiveHandler != nil {
 			cur.inactiveHandler.HandleInactive(cur, ex)
 			break

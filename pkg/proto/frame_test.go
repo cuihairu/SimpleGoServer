@@ -17,7 +17,7 @@ func TestEncodeDecodeRoundTrip(t *testing.T) {
 		{
 			name: "request with json payload",
 			frame: &Frame{
-				Header: FrameHeader{FrameType: REQUEST, StreamId: 42, Length: 0},
+				Header:  FrameHeader{FrameType: REQUEST, StreamId: 42, Length: 0},
 				Payload: []byte(`{"action":"echo","data":"hi"}`),
 			},
 			wantAct: "echo",
