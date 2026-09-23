@@ -286,7 +286,10 @@ func startTCPServer(t *testing.T, requestHandler RequestHandler) (addr string, p
 		t.Fatalf("listen: %v", err)
 	}
 	ph = NewProtocolHandler(requestHandler)
-	t.Cleanup(func() { _ = listener.Close() })
+	t.Cleanup(func() {
+		ph.Close() // stop the session janitor
+		_ = listener.Close()
+	})
 
 	go func() {
 		for {
@@ -577,5 +580,171 @@ func TestServerHelloPaths(t *testing.T) {
 	}
 	if resp.OK() {
 		t.Fatal("HELLO with empty version list unexpectedly accepted")
+	}
+}
+
+// TestClientResumeRestoresSubscriptions covers the reconnect flow end to
+// end: a session drops after subscribing, the client reconnects presenting
+// the token, and the subscription is live again — pushes reach the new
+// connection without an explicit re-subscribe.
+func TestClientResumeRestoresSubscriptions(t *testing.T) {
+	addr, ph := startTCPServer(t, nil)
+
+	c1, err := Dial(addr, nil)
+	if err != nil {
+		t.Fatalf("Dial(): %v", err)
+	}
+	res1, err := c1.Handshake(2 * time.Second)
+	if err != nil {
+		t.Fatalf("Handshake(): %v", err)
+	}
+	if res1.Resumed {
+		t.Fatal("first handshake unexpectedly resumed a session")
+	}
+	if res1.Token == "" {
+		t.Fatal("handshake returned no session token")
+	}
+	if err := c1.Subscribe("ticks", 2*time.Second); err != nil {
+		t.Fatalf("Subscribe(): %v", err)
+	}
+	_ = c1.Close() // the drop
+
+	pushes := make(chan *Frame, 1)
+	c2, err := Dial(addr, func(frame *Frame) { pushes <- frame })
+	if err != nil {
+		t.Fatalf("re-Dial(): %v", err)
+	}
+	defer c2.Close()
+	res2, err := c2.HandshakeWith(res1.Token, 2*time.Second)
+	if err != nil {
+		t.Fatalf("resume Handshake(): %v", err)
+	}
+	if !res2.Resumed {
+		t.Fatal("resume with a live session token was not recognized")
+	}
+	if res2.Token != res1.Token {
+		t.Fatalf("resume changed the token: got %q, want %q", res2.Token, res1.Token)
+	}
+	if got := ph.Subscribers("ticks"); got != 1 {
+		t.Fatalf("subscribers after resume = %d, want 1 (the dead transport must be gone)", got)
+	}
+
+	if _, err := ph.Publish("ticks", map[string]string{"hello": "again"}); err != nil {
+		t.Fatalf("Publish(): %v", err)
+	}
+	select {
+	case frame := <-pushes:
+		msg, err := DecodeJSONMessage(frame)
+		if err != nil || msg.Action != "ticks" {
+			t.Fatalf("unexpected push %v (err=%v)", frame, err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no push after resume — subscription was not restored")
+	}
+}
+
+// TestClientResumeUnknownTokenStartsFresh checks that a bogus token is not
+// an error: the client just gets a new session and subscribes normally.
+func TestClientResumeUnknownTokenStartsFresh(t *testing.T) {
+	addr, _ := startTCPServer(t, nil)
+
+	client, err := Dial(addr, nil)
+	if err != nil {
+		t.Fatalf("Dial(): %v", err)
+	}
+	defer client.Close()
+	res, err := client.HandshakeWith("no-such-token", 2*time.Second)
+	if err != nil {
+		t.Fatalf("HandshakeWith(): %v", err)
+	}
+	if res.Resumed {
+		t.Fatal("unknown token was reported as resumed")
+	}
+	if res.Token == "" || res.Token == "no-such-token" {
+		t.Fatalf("fresh session token = %q, want a new one", res.Token)
+	}
+}
+
+// TestClientResumeExpiredSessionIsFresh shrinks the session TTL so the
+// reconnect arrives after expiry: the token is not honored, mirroring an
+// abandoned session.
+func TestClientResumeExpiredSessionIsFresh(t *testing.T) {
+	addr, ph := startTCPServer(t, nil)
+
+	c1, err := Dial(addr, nil)
+	if err != nil {
+		t.Fatalf("Dial(): %v", err)
+	}
+	res1, err := c1.Handshake(2 * time.Second)
+	if err != nil {
+		t.Fatalf("Handshake(): %v", err)
+	}
+	_ = c1.Close()
+
+	ph.mu.Lock()
+	ph.sessionTTL = -time.Second // every resume attempt is now "too late"
+	ph.mu.Unlock()
+
+	client, err := Dial(addr, nil)
+	if err != nil {
+		t.Fatalf("re-Dial(): %v", err)
+	}
+	defer client.Close()
+	res2, err := client.HandshakeWith(res1.Token, 2*time.Second)
+	if err != nil {
+		t.Fatalf("resume Handshake(): %v", err)
+	}
+	if res2.Resumed {
+		t.Fatal("expired session was resumed")
+	}
+}
+
+// TestDroppedSubscriberDoesNotReviveOnResume verifies the accounting
+// behind resume: when Publish drops a subscriber that cannot keep up, the
+// topic must leave the session too, so a later resume does not silently
+// re-subscribe the client.
+func TestDroppedSubscriberDoesNotReviveOnResume(t *testing.T) {
+	addr, ph := startTCPServer(t, nil)
+
+	c1, err := Dial(addr, nil)
+	if err != nil {
+		t.Fatalf("Dial(): %v", err)
+	}
+	res1, err := c1.Handshake(2 * time.Second)
+	if err != nil {
+		t.Fatalf("Handshake(): %v", err)
+	}
+	if err := c1.Subscribe("ticks", 2*time.Second); err != nil {
+		t.Fatalf("Subscribe(): %v", err)
+	}
+
+	_ = c1.Close() // dead transport
+	// TCP semantics: the first write to a closed peer still succeeds (the
+	// RST has not come back yet), so keep publishing until the server has
+	// observed the write failure and dropped the subscriber
+	deadline := time.Now().Add(2 * time.Second)
+	for ph.Subscribers("ticks") > 0 && time.Now().Before(deadline) {
+		_, _ = ph.Publish("ticks", "x")
+		time.Sleep(10 * time.Millisecond)
+	}
+	ph.mu.RLock()
+	s := ph.sessions[res1.Token]
+	_, stillRecorded := s.topics["ticks"]
+	ph.mu.RUnlock()
+	if stillRecorded {
+		t.Fatal("dropped topic is still recorded in the session")
+	}
+
+	c2, err := Dial(addr, nil)
+	if err != nil {
+		t.Fatalf("re-Dial(): %v", err)
+	}
+	defer c2.Close()
+	res2, err := c2.HandshakeWith(res1.Token, 2*time.Second)
+	if err != nil {
+		t.Fatalf("resume Handshake(): %v", err)
+	}
+	if !res2.Resumed || ph.Subscribers("ticks") != 0 {
+		t.Fatalf("resumed=%v subscribers=%d, want the session back without the dropped topic", res2.Resumed, ph.Subscribers("ticks"))
 	}
 }

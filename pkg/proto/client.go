@@ -75,16 +75,32 @@ func NewClient(conn net.Conn, onEvent EventHandler) *Client {
 type HandshakeResult struct {
 	Version  int
 	Features []string
+	// Token identifies the session server-side. Keep it across
+	// reconnects and pass it to HandshakeWith to have the server restore
+	// the subscriptions of the dropped connection.
+	Token string
+	// Resumed reports that the presented token was recognized and the
+	// old subscriptions are live on this connection again.
+	Resumed bool
 }
 
-// Handshake negotiates the protocol version: it offers every version this
-// client speaks, the server picks the best common one. On success the
-// result is remembered and NegotiatedVersion reports it; on rejection the
-// client closes itself, since frames the server cannot interpret are
-// pointless. Handshake is optional — the server serves un-negotiated
-// connections exactly as before.
+// Handshake negotiates the protocol version and opens a fresh session.
 func (c *Client) Handshake(timeout time.Duration) (*HandshakeResult, error) {
-	resp, err := c.roundTrip(HELLO, RESPONSE, "hello", &HelloRequest{Versions: []int{ProtocolVersion}}, timeout)
+	return c.HandshakeWith("", timeout)
+}
+
+// HandshakeWith negotiates the protocol version; on a reconnect, passing
+// the Token of the dropped connection also restores its subscriptions. On
+// success the result is remembered and NegotiatedVersion reports the
+// version; on rejection the client closes itself, since frames the server
+// cannot interpret are pointless. Handshaking is optional — the server
+// serves un-negotiated connections exactly as before.
+func (c *Client) HandshakeWith(session string, timeout time.Duration) (*HandshakeResult, error) {
+	req := &HelloRequest{Versions: []int{ProtocolVersion}}
+	if session != "" {
+		req.Resume = session
+	}
+	resp, err := c.roundTrip(HELLO, RESPONSE, "hello", req, timeout)
 	if err != nil {
 		return nil, err
 	}
@@ -98,7 +114,12 @@ func (c *Client) Handshake(timeout time.Duration) (*HandshakeResult, error) {
 		return nil, fmt.Errorf("proto: malformed handshake response: %w", err)
 	}
 	c.version.Store(int32(agreed.Version))
-	return &HandshakeResult{Version: agreed.Version, Features: agreed.Features}, nil
+	return &HandshakeResult{
+		Version:  agreed.Version,
+		Features: agreed.Features,
+		Token:    agreed.Token,
+		Resumed:  agreed.Resumed,
+	}, nil
 }
 
 // NegotiatedVersion reports the protocol version agreed in Handshake, or

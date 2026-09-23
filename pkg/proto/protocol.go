@@ -1,6 +1,8 @@
 package proto
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -52,16 +54,20 @@ func negotiate(clientVersions []int) int {
 	return best
 }
 
-// HelloRequest is the HELLO payload: every version the client can speak.
+// HelloRequest is the HELLO payload: every version the client can speak,
+// plus — on a reconnect — the session token it wants to resume.
 type HelloRequest struct {
-	Versions []int `json:"versions"`
+	Versions []int  `json:"versions"`
+	Resume   string `json:"resume,omitempty"`
 }
 
-// HelloResponse is the handshake reply: the chosen version and what it
-// includes.
+// HelloResponse is the handshake reply: the chosen version, what it
+// includes, and the session token for resuming after a reconnect.
 type HelloResponse struct {
 	Version  int      `json:"version"`
 	Features []string `json:"features"`
+	Token    string   `json:"token,omitempty"`
+	Resumed  bool     `json:"resumed,omitempty"`
 }
 
 // ProtocolHandler is the server-side semantic layer on top of the frame
@@ -77,7 +83,30 @@ type ProtocolHandler struct {
 	pings atomic.Uint64
 	pongs atomic.Uint64
 	seq   atomic.Uint32
+
+	// resumable sessions, see handleHello. connTokens is the reverse index
+	// so a SUBSCRIBE frame can find the session to record the topic in
+	// without scanning every session.
+	sessions   map[string]*session
+	connTokens map[net.Conn]string
+
+	closed     chan struct{}
+	closeOnce  sync.Once
+	sessionTTL time.Duration
 }
+
+// session is the server-side memory of one logical connection. It outlives
+// the transport: when a client reconnects and presents the token, its
+// topics are moved onto the new connection.
+type session struct {
+	conn     net.Conn
+	topics   map[string]struct{}
+	lastSeen time.Time
+}
+
+// sessionTTL bounds how long a disconnected session is kept for resuming.
+// It is a field on the handler (not a constant) so tests can shrink it.
+const defaultSessionTTL = 10 * time.Minute
 
 var _ handler.InboundHandler = (*ProtocolHandler)(nil)
 
@@ -87,11 +116,59 @@ func NewProtocolHandler(handleRequest RequestHandler) *ProtocolHandler {
 			return nil, fmt.Errorf("no request handler registered for action %q", action)
 		}
 	}
-	return &ProtocolHandler{
+	p := &ProtocolHandler{
 		handleRequest: handleRequest,
 		logger:        log.New(os.Stderr, "[proto]", log.LstdFlags),
 		subs:          make(map[string]map[net.Conn]struct{}),
+		sessions:      make(map[string]*session),
+		connTokens:    make(map[net.Conn]string),
+		closed:        make(chan struct{}),
+		sessionTTL:    defaultSessionTTL,
 	}
+	go p.sessionJanitor()
+	return p
+}
+
+// Close stops the background session janitor. The handler stays usable for
+// connections that are already wired into a pipeline; closing it is only
+// needed to release the janitor goroutine, e.g. in tests.
+func (p *ProtocolHandler) Close() {
+	p.closeOnce.Do(func() { close(p.closed) })
+}
+
+// sessionJanitor periodically drops sessions that were never resumed within
+// the TTL, so tokens of clients that never came back do not accumulate.
+func (p *ProtocolHandler) sessionJanitor() {
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-p.closed:
+			return
+		case <-ticker.C:
+			p.mu.Lock()
+			for token, s := range p.sessions {
+				if time.Since(s.lastSeen) > p.sessionTTL {
+					delete(p.sessions, token)
+					if s.conn != nil {
+						delete(p.connTokens, s.conn)
+					}
+				}
+			}
+			p.mu.Unlock()
+		}
+	}
+}
+
+// newSessionToken returns a random, unguessable session token.
+func newSessionToken() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		// crypto/rand failing means the system entropy source is broken;
+		// an unpredictable token is a hardening feature, not a necessity
+		return fmt.Sprintf("s-%x", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b)
 }
 
 // HandleRead expects message to be a decoded *Frame produced by FrameCodec
@@ -128,12 +205,19 @@ func (p *ProtocolHandler) HandleRead(ctx handler.InboundContext, message handler
 	}
 }
 
-// handleHello answers the version negotiation. The server stays stateless
-// here: it either confirms the best common version or replies with an
-// error response — it is then the client's job to disconnect, because no
-// further frames could be interpreted anyway. A missing or empty versions
-// list is answered the same way: the server cannot guess what a client
-// that offers nothing can understand.
+// handleHello answers the version negotiation and hands out session tokens.
+// The negotiation itself stays stateless: the server either confirms the
+// best common version or replies with an error response — it is then the
+// client's job to disconnect, because no further frames could be
+// interpreted anyway. A missing or empty versions list is answered the same
+// way: the server cannot guess what a client that offers nothing can
+// understand.
+//
+// Sessions are the one piece of per-connection state the server keeps. A
+// fresh handshake mints a token; a handshake carrying a known token moves
+// the recorded subscriptions onto the new connection, which is also what
+// reaps the dead transport from the subscription table — no disconnect
+// callback needed. Unknown or expired tokens start a fresh session.
 func (p *ProtocolHandler) handleHello(ctx handler.InboundContext, frame *Frame) {
 	msg, err := DecodeJSONMessage(frame)
 	if err != nil {
@@ -153,7 +237,49 @@ func (p *ProtocolHandler) handleHello(ctx handler.InboundContext, frame *Frame) 
 			&ErrorMessage{Error: fmt.Sprintf("no common protocol version (client offers %v, server speaks %v)", req.Versions, supportedVersions)})
 		return
 	}
-	p.reply(ctx, RESPONSE, frame.Header.StreamId, "hello", &HelloResponse{Version: chosen, Features: protocolFeatures})
+	token, resumed := p.attachSession(ctx.Conn(), req.Resume)
+	p.reply(ctx, RESPONSE, frame.Header.StreamId, "hello", &HelloResponse{
+		Version:  chosen,
+		Features: protocolFeatures,
+		Token:    token,
+		Resumed:  resumed,
+	})
+}
+
+// attachSession binds conn to its session: it resumes the session named by
+// the token (moving its recorded topics onto conn and dropping the dead
+// transport), or mints a fresh session. The returned flag reports whether
+// an existing session was resumed.
+func (p *ProtocolHandler) attachSession(conn net.Conn, token string) (string, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if token != "" {
+		if s, ok := p.sessions[token]; ok && time.Since(s.lastSeen) <= p.sessionTTL {
+			// move the recorded topics onto the new transport: the dead
+			// connection leaves every member set, conn takes its place
+			for topic := range s.topics {
+				members := p.subs[topic]
+				if members == nil {
+					members = make(map[net.Conn]struct{})
+					p.subs[topic] = members
+				}
+				delete(members, s.conn)
+				members[conn] = struct{}{}
+			}
+			delete(p.connTokens, s.conn)
+			s.conn = conn
+			s.lastSeen = time.Now()
+			p.connTokens[conn] = token
+			return token, true
+		}
+		// unknown, expired or empty: fall through to a fresh session
+	}
+
+	token = newSessionToken()
+	p.sessions[token] = &session{conn: conn, topics: make(map[string]struct{}), lastSeen: time.Now()}
+	p.connTokens[conn] = token
+	return token, false
 }
 
 func (p *ProtocolHandler) handleRequestFrame(ctx handler.InboundContext, frame *Frame) {
@@ -209,6 +335,18 @@ func (p *ProtocolHandler) handleSubscribe(ctx handler.InboundContext, frame *Fra
 		delete(members, ctx.Conn())
 		if len(members) == 0 {
 			delete(p.subs, topic)
+		}
+	}
+	// record the change in the connection's session, so a reconnect with
+	// the token can restore exactly these subscriptions
+	if token, ok := p.connTokens[ctx.Conn()]; ok {
+		if s := p.sessions[token]; s != nil {
+			if subscribe {
+				s.topics[topic] = struct{}{}
+			} else {
+				delete(s.topics, topic)
+			}
+			s.lastSeen = time.Now()
 		}
 	}
 	p.mu.Unlock()
@@ -300,6 +438,12 @@ func (p *ProtocolHandler) removeSubscriber(topic string, conn net.Conn) {
 		delete(members, conn)
 		if len(members) == 0 {
 			delete(p.subs, topic)
+		}
+	}
+	// a dropped subscriber must not come back to life on resume
+	if token, ok := p.connTokens[conn]; ok {
+		if s := p.sessions[token]; s != nil {
+			delete(s.topics, topic)
 		}
 	}
 }
