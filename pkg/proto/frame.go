@@ -19,5 +19,5 @@ type FrameHeader struct {
 }
 
 func (f *FrameHeader) Id() uint32 {
-	return (uint32(f.FrameType) << 24) & f.StreamId
+	return (uint32(f.FrameType) << 24) | (f.StreamId & 0x00FFFFFF)
 }

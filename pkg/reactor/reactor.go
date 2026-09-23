@@ -53,6 +53,7 @@ func NewReactor(opts pkg.Options, logger *log.Logger, eventListener event.Listen
 
 	group, err := NewWorkerGroup(opts, ctx, eventListener, pipelineInitializer, balancer)
 	if err != nil {
+		ctxCancel()
 		eventListener.OnError(err)
 		return nil, err
 	}
@@ -89,6 +90,12 @@ func (r *Reactor) Run() {
 		}
 		conn, err := r.listener.Accept()
 		if err != nil {
+			select {
+			case <-r.ctx.Done():
+				// listener closed while shutting down; expected error
+				return
+			default:
+			}
 			r.eventListener.OnError(err)
 			continue
 		}
@@ -100,12 +107,37 @@ func (r *Reactor) Run() {
 	}
 }
 
+// ShutdownGracefully stops accepting new connections and closes the listener.
 func (r *Reactor) ShutdownGracefully() {
+	r.eventListener.OnShutdown()
 	r.Stop()
 }
 
+// Register hands an accepted connection over to the worker group. It lets the
+// reactor be used programmatically instead of through Run.
+func (r *Reactor) Register(conn net.Conn) {
+	if err := r.workers.Dispatch(conn); err != nil {
+		r.eventListener.OnError(err)
+	}
+}
+
+// Unregister closes the connection; handlers observe it as an inactive event.
+func (r *Reactor) Unregister(conn net.Conn) {
+	_ = conn.Close()
+}
+
+// Next returns a worker as an event loop, chosen by the load balancer.
+func (r *Reactor) Next() event.Loop {
+	worker, err := r.workers.balancer.Next("")
+	if err != nil {
+		return nil
+	}
+	return worker
+}
+
 func (r *Reactor) Stop() error {
-	r.eventListener.OnShutdown()
+	// cancel wakes the accept loop, closing the listener unblocks a pending
+	// Accept so Run can observe the cancelled context and return
 	r.cancelFunc()
 	return r.listener.Close()
 }

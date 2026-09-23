@@ -10,17 +10,16 @@ import (
 	"github.com/cuihairu/simplegoserver/pkg/handler"
 	"net"
 	"runtime"
-	"sync"
 	"sync/atomic"
 )
 
 type Worker struct {
-	mutex               sync.Mutex
 	ctx                 context.Context
+	cancel              context.CancelFunc
 	newCh               chan net.Conn
 	count               atomic.Int32
 	id                  string
-	opts                *ServerOptions
+	lockThread          bool
 	pipelineInitializer handler.PipelineInitializer
 	eventListener       event.Listener
 }
@@ -55,7 +54,7 @@ func NewWorkerGroup(opts pkg.Options, ctx context.Context, eventListener event.L
 	}
 
 	for i := 0; i < serverOptions.NumWorkers; i++ {
-		worker, err := NewWorker(ctx, fmt.Sprintf("worker:%d", i), eventListener, pipelineInitializer)
+		worker, err := NewWorker(ctx, fmt.Sprintf("worker:%d", i), eventListener, pipelineInitializer, serverOptions.GetLockThread())
 		if err != nil {
 			eventListener.OnError(err)
 			return nil, err
@@ -85,11 +84,14 @@ func (g *WorkerGroup) Dispatch(conn net.Conn) error {
 	return nil
 }
 
-func NewWorker(ctx context.Context, id string, eventListener event.Listener, pipelineInitializer handler.PipelineInitializer) (*Worker, error) {
+func NewWorker(parent context.Context, id string, eventListener event.Listener, pipelineInitializer handler.PipelineInitializer, lockThread bool) (*Worker, error) {
+	ctx, cancel := context.WithCancel(parent)
 	return &Worker{
 		ctx:                 ctx,
+		cancel:              cancel,
 		newCh:               make(chan net.Conn, 100),
 		id:                  id,
+		lockThread:          lockThread,
 		pipelineInitializer: pipelineInitializer,
 		eventListener:       eventListener,
 	}, nil
@@ -98,8 +100,16 @@ func NewWorker(ctx context.Context, id string, eventListener event.Listener, pip
 func (w *Worker) AddConn(conn net.Conn) {
 	w.newCh <- conn
 }
+
+// Stop stops the worker loop. Connections already handed to handlers are
+// closed by themselves once they observe the cancelled context.
+func (w *Worker) Stop() error {
+	w.cancel()
+	return nil
+}
+
 func (w *Worker) Run() {
-	if w.opts.LockThread {
+	if w.lockThread {
 		runtime.LockOSThread()
 		defer runtime.UnlockOSThread()
 	}
@@ -108,6 +118,20 @@ func (w *Worker) Run() {
 		case c := <-w.newCh:
 			go w.handleConnection(c)
 		case <-w.ctx.Done():
+			w.closePending()
+			return
+		}
+	}
+}
+
+// closePending closes connections still queued in newCh so they are not leaked
+// when the worker stops before dispatching them.
+func (w *Worker) closePending() {
+	for {
+		select {
+		case c := <-w.newCh:
+			_ = c.Close()
+		default:
 			return
 		}
 	}
@@ -146,3 +170,4 @@ func (w *Worker) handleConnection(conn net.Conn) {
 }
 
 var _ pkg.CountBackend = (*Worker)(nil)
+var _ event.Loop = (*Worker)(nil)
