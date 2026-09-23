@@ -38,7 +38,7 @@ var (
 
 func runServer() {
 	addr := fmt.Sprintf("%s://%s:%d", viper.GetString("server.network"), viper.GetString("server.host"), viper.GetInt("server.port"))
-	options := reactor.ServerOptions{
+	options := &reactor.ServerOptions{
 		Multicore:  viper.GetBool("server.multicore"),
 		NumWorkers: viper.GetInt("server.numWorkers"),
 		Listener:   addr,

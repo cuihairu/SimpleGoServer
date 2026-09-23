@@ -94,4 +94,46 @@
 
 ---
 
+## 快速开始
+
+要求 Go 1.22+。
+
+```bash
+# 跑通完整示例：终端 1 启动服务端，终端 2 启动并发客户端
+go run ./examples/echo-server
+go run ./examples/concurrent-client
+```
+
+构建与测试：
+
+```bash
+go build ./...        # 编译
+go vet ./...          # 静态检查
+go test ./... -race   # 单元测试 + 端到端集成测试（含竞态检测）
+
+# 性能基准：帧编解码 + 真实 TCP 端到端吞吐 / 并发扩展 / 连接建立拆除
+go test ./pkg/proto ./pkg/reactor -bench . -benchmem
+```
+
+命令行形态的服务端与协议客户端在 `cmd/server` 与 `cmd/cli`；更完整的
+可运行示例（并发连接、自定义协议收发、优雅关闭）见
+[examples/README.md](examples/README.md)。
+
+### 目录结构
+
+```text
+cmd/               命令行入口（server / cli）
+examples/          可运行的完整示例（服务端 + 并发客户端）
+internal/
+  balancer/        负载均衡策略（自适应最少负载等）
+  handler/         handler pipeline 实现（Netty 风格的传播语义）
+  executor/        任务执行器
+pkg/
+  reactor/         主从 Reactor 核心（accept、worker、连接注册、优雅关闭）
+  proto/           自定义帧协议（编解码、请求/响应、发布/订阅、客户端）
+  handler/         handler 抽象接口
+  event/           事件循环抽象
+docs/              设计取舍与协议说明（Analysis.md、Proto.md）
+```
+
 [设计取舍与需求分析说明文档](docs/Analysis.md)

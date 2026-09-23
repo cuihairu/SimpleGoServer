@@ -47,7 +47,12 @@ func NewReactor(opts pkg.Options, logger *log.Logger, eventListener event.Listen
 	if eventListener == nil {
 		eventListener = handlerImpl.NewErrorHandler()
 	}
-	serverOptions := opts.(*ServerOptions)
+	serverOptions, ok := opts.(*ServerOptions)
+	if !ok {
+		err := fmt.Errorf("reactor: opts must be *ServerOptions, got %T", opts)
+		eventListener.OnError(err)
+		return nil, err
+	}
 	parse, err := url.Parse(serverOptions.Listener)
 	if err != nil {
 		eventListener.OnError(err)
