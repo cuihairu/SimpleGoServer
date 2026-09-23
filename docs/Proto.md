@@ -173,6 +173,25 @@ C2 <-- RESPONSE {"version":1,"token":"a1b2…","resumed":true} - S
 - 客户端用法：断线前保存 `HandshakeResult.Token`，重连后调
   `client.HandshakeWith(token, timeout)`，`Resumed == true` 即恢复成功。
 
+### 自动重连（ResilientClient）
+
+`proto.ResilientClient` 把上述机制包装成开箱即用的客户端：连接断开后
+后台按指数退避重连（默认 100ms 起、5s 封顶），握手自动携带记住的
+token；若会话已过期（`Resumed == false`，例如服务端重启），记录中的
+订阅自动重发。CLI 的 `-resilient` 即基于它：
+
+```go
+rc := proto.NewResilientClient(addr, onEvent, nil)
+rc.Connect(timeout)          // 首次连接（含握手）
+rc.Subscribe("ticks", 5*time.Second) // 记录在案，重连后自动恢复
+rc.Call("echo", "hi", 5*time.Second) // 断线期间返回错误，恢复后照常
+rc.Close()                   // 停止重连循环
+```
+
+语义边界：重连在后台进行，`Call` 等 API 把当前连接的错误如实返回给
+调用方（是否重试由调用方决定）；恢复会话后，**离线窗口内的 PUBLISH
+不补发**（见下文扩展方向）。
+
 ## 优雅关闭
 
 连接级关闭是**协议化的三步握手**，而非静默断开：
@@ -201,15 +220,14 @@ C <-- RESPONSE ack -------- S
 （直接断连）**——分帧被破坏意味着后续字节流已不可解析，继续维持连接只
 会产生更多垃圾。
 
-## 流式传输与自动重连（未实现，设计预留）
+## 流式传输与离线补发（未实现，设计预留）
 
 以下能力当前实现未包含，属扩展方向：
 
 - **流式传输**：同一 StreamId 的多个 `REQUEST` 分片（借助 `Flags` 的
   MORE/END 位）聚合为一条逻辑消息；HTTP/2 的 `END_STREAM` 标志即此做法。
-- **客户端自动重连**：带退避的重连循环（封装 `Dial` +
-  `HandshakeWith(token)` + 重挂订阅确认），并在握手响应中携带离线期间
-  错过的推送或其游标——目前重连恢复订阅后，离线窗口内的 PUBLISH 不补发。
+- **离线补发**：恢复会话后把断线窗口内错过的 PUBLISH 按序补发，需要
+  服务端为每个会话缓存近期消息并在握手响应中带游标确认。
 - **严格握手**：要求连接首帧必须是 `HELLO`、未协商即拒绝业务帧。需要
   服务端维护每连接握手标记及随之而来的状态清理，当前按宽松模式处理。
 

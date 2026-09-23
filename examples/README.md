@@ -65,6 +65,15 @@ go run ./cmd/cli -subscribe ticks -watch 8s -keepalive 0
 注意保活间隔必须明显小于服务端 IdleTimeout，否则下一次 PING 还没发出
 连接就先被回收了。
 
+服务端滚动重启时，靠保活是撑不过去的——连接终究会断。此时用
+`cmd/cli` 的 `-resilient`：断线后自动指数退避重连，握手携带会话 token
+恢复订阅（服务端重启 token 失效时自动重发订阅），订阅体验无间断：
+
+```bash
+go run ./cmd/cli -resilient -subscribe ticks
+# 另一个终端重启 echo-server，push 会自动恢复，无需重新运行 cli
+```
+
 ## 代码导读
 
 - **业务逻辑只有一个函数**：`echo-server` 里的 `handleDemo(action, data) (any, error)`。

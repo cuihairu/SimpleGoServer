@@ -15,6 +15,16 @@ import (
 	"github.com/cuihairu/simplegoserver/pkg/proto"
 )
 
+// protocolClient is the surface cli needs; both the plain client and the
+// auto-reconnecting one satisfy it.
+type protocolClient interface {
+	Call(action string, data any, timeout time.Duration) (*proto.Response, error)
+	Subscribe(topic string, timeout time.Duration) error
+	Done() <-chan struct{}
+	Close() error
+	CloseGracefully(timeout time.Duration) error
+}
+
 func main() {
 	addr := flag.String("addr", "127.0.0.1:8080", "server address")
 	action := flag.String("action", "", "request action (e.g. echo)")
@@ -24,15 +34,29 @@ func main() {
 	timeout := flag.Duration("timeout", 5*time.Second, "per-request timeout")
 	keepalive := flag.Duration("keepalive", 30*time.Second, "ping interval, keeps the connection alive through server idle timeouts (0 disables)")
 	hello := flag.Bool("hello", false, "negotiate the protocol version before anything else")
+	resilient := flag.Bool("resilient", false, "auto-reconnect when the connection drops, restoring the session and subscriptions (implies a handshake)")
 	flag.Parse()
 
 	eventCh := make(chan *proto.Frame, 16)
-	client, err := proto.Dial(*addr, func(frame *proto.Frame) {
-		eventCh <- frame
-	})
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "connect %s: %v\n", *addr, err)
-		os.Exit(1)
+	onEvent := func(frame *proto.Frame) { eventCh <- frame }
+
+	var client protocolClient
+	if *resilient {
+		rc := proto.NewResilientClient(*addr, onEvent, nil)
+		client = rc
+		// Connect handshakes and will keep the session alive across
+		// server restarts; -hello and -keepalive are subsumed by it
+		if err := rc.Connect(*timeout); err != nil {
+			fmt.Fprintf(os.Stderr, "connect %s: %v\n", *addr, err)
+			os.Exit(1)
+		}
+	} else {
+		plain, err := proto.Dial(*addr, onEvent)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "connect %s: %v\n", *addr, err)
+			os.Exit(1)
+		}
+		client = plain
 	}
 	defer client.Close()
 
@@ -44,20 +68,23 @@ func main() {
 		_ = client.CloseGracefully(*timeout)
 	}()
 
-	// a watching subscriber only receives, so the server's idle timeout
-	// would eventually reap the connection; ping periodically to prevent it
-	if *keepalive > 0 {
-		stop := client.KeepAlive(*keepalive, *timeout)
-		defer stop()
-	}
-
-	if *hello {
-		res, err := client.Handshake(*timeout)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "handshake: %v\n", err)
-			os.Exit(1)
+	if plain, isPlain := client.(*proto.Client); isPlain {
+		// a watching subscriber only receives, so the server's idle
+		// timeout would eventually reap the connection; ping periodically
+		// to prevent it. The resilient client recovers instead of keeping
+		// the link alive, so it needs no keepalive.
+		if *keepalive > 0 {
+			stop := plain.KeepAlive(*keepalive, *timeout)
+			defer stop()
 		}
-		fmt.Printf("handshake ok: protocol v%d, features %v\n", res.Version, res.Features)
+		if *hello {
+			res, err := plain.Handshake(*timeout)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "handshake: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Printf("handshake ok: protocol v%d, features %v\n", res.Version, res.Features)
+		}
 	}
 
 	if *topic != "" {
