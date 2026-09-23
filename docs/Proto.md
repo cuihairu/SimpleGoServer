@@ -41,7 +41,7 @@
 | 字段 | 大小 | 说明 |
 | --- | --- | --- |
 | FrameType | 1 B | 帧类型，见下表 |
-| Flags | 1 B | 预留（压缩/分片标志位），当前恒为 0 |
+| Flags | 1 B | bit 0 = `FlagMore`：本帧是分片且后面还有；其余预留 |
 | StreamId | 4 B | 流 ID：请求/响应用来配对；发布帧复用为 topic 序号 |
 | Length | 4 B | 载荷字节数；解码时超过 `MaxFrameSize`（1 MiB）即协议错误并断连 |
 | Payload | Length B | JSONMessage envelope 的 JSON 编码 |
@@ -124,6 +124,33 @@ S  -- PUBLISH action="ticks" data=... ------------> C1  （以及 C2、C3…）
 帧——心跳或业务流量——都会重置计时。因此完整的心跳方案是两端配合的：
 客户端 `KeepAlive` 既保住自己不被服务端回收，又在 `interval +
 pingTimeout` 内发现死链；服务端 `IdleTimeout` 清理不说话的僵尸连接。
+
+## 流式传输
+
+单帧上限 `MaxFrameSize`（1 MiB）不限制逻辑消息的大小：超过阈值的载荷
+自动拆成多个**分片**——同一 StreamId、同一帧类型，除最后一片外都置
+`Flags` 的 `FlagMore` 位；接收侧聚合还原成一个逻辑帧后照常处理
+（HTTP/2 的 `END_STREAM` 是同一思路，只是方向相反：它标记"流在此
+结束"，这里标记"流还在继续"）：
+
+```text
+C -- REQUEST streamId=7 FlagMore  payload[0:1MiB)   --> S
+C -- REQUEST streamId=7 FlagMore  payload[1MiB:2MiB) --> S
+C -- REQUEST streamId=7 flags=0   payload[2MiB:]    --> S
+S  -- RESPONSE streamId=7 (聚合后的完整响应) --------> C
+```
+
+- **完全向后兼容**：单帧消息不带任何标志，不分片的对端产生的字节流
+  与旧实现逐字节相同。
+- **聚合放在 FrameCodec**（每连接一个实例）：分片拼装要么完成要么
+  断连，不跨调用持有状态，因此没有每连接清理问题。
+- **完整性约束**：聚合中途遇到不同 StreamId 或不同帧类型即协议错误
+  断连——分片一旦交错，字节流已不可信任；拼装总量受 `MaxStreamSize`
+  （8 MiB）限制，防止分片洪泛耗尽内存。
+- **发送侧防交错**：客户端并发 `Call` 各自产生分片时，同一请求的
+  分片必须在锁内连续写出，否则其他请求的帧会插进分片序列中间。
+- 业务层完全无感知：`handleDemo` 收到的始终是聚合后的完整载荷，
+  客户端 `Call` 传多大都可以。
 
 ## 握手与版本协商
 
@@ -220,12 +247,10 @@ C <-- RESPONSE ack -------- S
 （直接断连）**——分帧被破坏意味着后续字节流已不可解析，继续维持连接只
 会产生更多垃圾。
 
-## 流式传输与离线补发（未实现，设计预留）
+## 离线补发（未实现，设计预留）
 
 以下能力当前实现未包含，属扩展方向：
 
-- **流式传输**：同一 StreamId 的多个 `REQUEST` 分片（借助 `Flags` 的
-  MORE/END 位）聚合为一条逻辑消息；HTTP/2 的 `END_STREAM` 标志即此做法。
 - **离线补发**：恢复会话后把断线窗口内错过的 PUBLISH 按序补发，需要
   服务端为每个会话缓存近期消息并在握手响应中带游标确认。
 - **严格握手**：要求连接首帧必须是 `HELLO`、未协商即拒绝业务帧。需要

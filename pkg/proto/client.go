@@ -44,6 +44,11 @@ type Client struct {
 	nextID  uint32
 	pending map[uint32]chan *Response
 
+	// streamThreshold is the payload size above which outbound requests
+	// are fragmented; fragments of one request are written under the
+	// lock, so concurrent large calls cannot interleave on the wire.
+	streamThreshold int
+
 	version atomic.Int32 // protocol version agreed in Handshake, 0 if none
 
 	closed   chan struct{}
@@ -62,10 +67,11 @@ func Dial(addr string, onEvent EventHandler) (*Client, error) {
 // NewClient wraps an established connection. It takes ownership of conn.
 func NewClient(conn net.Conn, onEvent EventHandler) *Client {
 	c := &Client{
-		conn:    conn,
-		onEvent: onEvent,
-		pending: make(map[uint32]chan *Response),
-		closed:  make(chan struct{}),
+		conn:            conn,
+		onEvent:         onEvent,
+		pending:         make(map[uint32]chan *Response),
+		streamThreshold: defaultStreamThreshold,
+		closed:          make(chan struct{}),
 	}
 	go c.readLoop()
 	return c
@@ -231,15 +237,28 @@ func (c *Client) roundTrip(t FrameType, respType FrameType, action string, data 
 	id := c.nextID
 	ch := make(chan *Response, 1)
 	c.pending[id] = ch
-	c.mu.Unlock()
 
 	frame, err := EncodeJSON(t, id, action, data)
+	var buffers [][]byte
 	if err == nil {
-		var buf []byte
-		buf, err = Encode(frame)
-		if err == nil {
-			_, err = c.conn.Write(buf)
-		}
+		buffers, err = encodeStreamFrames(t, id, frame.Payload, c.streamThreshold)
+	}
+	if err != nil {
+		c.mu.Unlock()
+		c.removePending(id)
+		return nil, err
+	}
+	if len(buffers) == 1 {
+		// the common case: writing outside the lock keeps a slow socket
+		// from stalling other callers that only want to register
+		c.mu.Unlock()
+		_, err = c.conn.Write(buffers[0])
+	} else {
+		// fragments of one message must reach the wire back to back, so
+		// concurrent callers cannot interleave their own frames between
+		// them; that is worth holding the lock through the writes
+		_, err = writeAll(c.conn, buffers)
+		c.mu.Unlock()
 	}
 	if err != nil {
 		c.removePending(id)
@@ -273,9 +292,24 @@ func (c *Client) removePending(id uint32) {
 	delete(c.pending, id)
 }
 
+// writeAll writes every buffer in order under one lock hold.
+func writeAll(conn net.Conn, buffers [][]byte) (int, error) {
+	total := 0
+	for _, buf := range buffers {
+		n, err := conn.Write(buf)
+		total += n
+		if err != nil {
+			return total, err
+		}
+	}
+	return total, nil
+}
+
 func (c *Client) readLoop() {
 	for {
-		frame, err := Decode(c.conn)
+		// fragments are assembled here, mirroring the server's codec, so
+		// large responses arrive as one logical frame
+		frame, err := DecodeStreamed(c.conn)
 		if err != nil {
 			c.failPending()
 			c.Close()

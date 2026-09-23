@@ -486,22 +486,47 @@ func newFrame(t FrameType, streamId uint32, payload []byte) *Frame {
 // outbound it encodes *Frame messages back into bytes. It must be added
 // before the protocol handler in the pipeline; without it the pipeline has
 // nothing to read the socket and the worker loop would spin.
+//
+// Streaming is transparent here: inbound, fragments (FlagMore) are
+// assembled into one logical frame before propagation; outbound, payloads
+// above the threshold are split into fragments. The codec is created per
+// connection, so an in-flight assembly lives and dies with the connection
+// and needs no cleanup hook.
 type FrameCodec struct {
 	logger *log.Logger
+
+	// streamThreshold is the outbound payload size above which frames are
+	// fragmented; inbound assembly is always accepted.
+	streamThreshold int
 }
 
 func NewFrameCodec() *FrameCodec {
-	return &FrameCodec{logger: log.New(os.Stderr, "[codec]", log.LstdFlags)}
+	return &FrameCodec{
+		logger:          log.New(os.Stderr, "[codec]", log.LstdFlags),
+		streamThreshold: defaultStreamThreshold,
+	}
+}
+
+// NewFrameCodecWithStreamThreshold builds a codec that fragments outbound
+// payloads above the given size. Useful for tests and for deployments that
+// prefer many small writes over one large one.
+func NewFrameCodecWithStreamThreshold(threshold int) *FrameCodec {
+	c := NewFrameCodec()
+	c.streamThreshold = threshold
+	return c
 }
 
 var _ handler.InboundHandler = (*FrameCodec)(nil)
 var _ handler.OutboundHandler = (*FrameCodec)(nil)
 
-// HandleRead blocks reading exactly one frame from the connection, then
-// propagates it downstream. A framing error closes the connection; a clean
-// peer close (io.EOF) also closes so the worker loop can finish quietly.
+// HandleRead blocks reading exactly one logical message from the connection
+// — assembling FlagMore fragments when present — then propagates it
+// downstream. A framing error closes the connection; a clean peer close
+// (io.EOF) also closes so the worker loop can finish quietly. A stream
+// violation (interleaved fragments, oversize assembly) is a protocol error
+// and closes too.
 func (c *FrameCodec) HandleRead(ctx handler.InboundContext, _ handler.Message) {
-	frame, err := Decode(ctx.Conn())
+	frame, err := DecodeStreamed(ctx.Conn())
 	if err != nil {
 		switch {
 		case errors.Is(err, os.ErrDeadlineExceeded):
@@ -520,17 +545,35 @@ func (c *FrameCodec) HandleRead(ctx handler.InboundContext, _ handler.Message) {
 }
 
 // HandleWrite encodes *Frame messages on their way out; any other message
-// type is propagated unchanged towards the head of the pipeline.
+// type is propagated unchanged towards the head of the pipeline. A payload
+// above the stream threshold is split into fragments encoded back to back,
+// so the wire never carries a frame larger than MaxFrameSize.
 func (c *FrameCodec) HandleWrite(ctx handler.OutboundContext, message handler.Message) {
 	frame, ok := message.(*Frame)
 	if !ok {
 		ctx.HandleWrite(message)
 		return
 	}
-	buf, err := Encode(frame)
+	buffers, err := encodeStreamFrames(frame.Header.FrameType, frame.Header.StreamId, frame.Payload, c.streamThreshold)
 	if err != nil {
 		ctx.Close(fmt.Errorf("proto: encode frame: %w", err))
 		return
 	}
-	ctx.HandleWrite(buf)
+	if len(buffers) == 1 {
+		ctx.HandleWrite(buffers[0])
+		return
+	}
+	joined := make([]byte, 0, sumLens(buffers))
+	for _, buf := range buffers {
+		joined = append(joined, buf...)
+	}
+	ctx.HandleWrite(joined)
+}
+
+func sumLens(buffers [][]byte) int {
+	n := 0
+	for _, buf := range buffers {
+		n += len(buf)
+	}
+	return n
 }
