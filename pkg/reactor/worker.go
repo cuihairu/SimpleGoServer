@@ -57,7 +57,9 @@ func NewWorkerGroup(opts pkg.Options, ctx context.Context, eventListener event.L
 		pipelineInitializer = handlerImpl.WithDefaultPipeline
 	}
 	if balancer == nil {
-		balancer = balancerImpl.NewLeastConnectionsBalancer[*Worker](false)
+		// adaptive default: route new connections to the least loaded
+		// worker instead of blind rotation
+		balancer = balancerImpl.NewAdaptiveBalancer[*Worker]()
 	}
 	registry := NewConnectionRegistry()
 	wg := &sync.WaitGroup{}
@@ -191,6 +193,12 @@ func (w *Worker) closePending() {
 
 func (w *Worker) Count() int {
 	return int(w.count.Load())
+}
+
+// Load is the live load figure the adaptive balancer consumes: the number
+// of connections this worker is currently handling.
+func (w *Worker) Load() float64 {
+	return float64(w.count.Load())
 }
 
 // lifecycleConn watches its own closure so the read loop can tell "handler
