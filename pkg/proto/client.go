@@ -110,6 +110,37 @@ func (c *Client) Ping(timeout time.Duration) error {
 	return nil
 }
 
+// KeepAlive starts a goroutine that pings the server every interval, so an
+// otherwise quiet connection survives server-side idle timeouts and a dead
+// link is detected within roughly one interval plus one ping timeout. When
+// a ping fails the connection is assumed dead: the client closes itself and
+// waiters observe it through Done. The returned stop function ends the
+// loop; closing the client stops it too. Interval must be positive.
+func (c *Client) KeepAlive(interval time.Duration, pingTimeout time.Duration) (stop func()) {
+	done := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-c.closed:
+				return
+			case <-done:
+				return
+			case <-ticker.C:
+				if err := c.Ping(pingTimeout); err != nil {
+					// unreachable or timed-out server: fail loudly by
+					// closing, which wakes every caller of Done
+					_ = c.Close()
+					return
+				}
+			}
+		}
+	}()
+	var once sync.Once
+	return func() { once.Do(func() { close(done) }) }
+}
+
 // CloseGracefully tells the server goodbye with a CLOSE frame, waits for
 // the acknowledgement and shuts the connection down. On any failure it
 // falls back to a plain Close. It is safe to call on an already closed

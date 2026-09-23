@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/cuihairu/simplegoserver/pkg/handler"
 	"github.com/cuihairu/simplegoserver/pkg/proto"
@@ -13,15 +14,19 @@ import (
 	"github.com/spf13/viper"
 )
 
-// echoInitializer wires the demo echo service into every connection: the
-// frame codec decodes bytes into frames, the protocol handler answers
-// requests, subscriptions and heartbeats.
+// One shared protocol handler for every connection: the subscription table
+// must be process-wide, or clients subscribed to the same topic on
+// different connections would never see each other's publishes.
+var demoProtocol = proto.NewProtocolHandler(func(action string, data []byte) (any, error) {
+	return map[string]any{"action": action, "data": json.RawMessage(data)}, nil
+})
+
+// echoInitializer wires the frame codec and the shared protocol handler
+// into every accepted connection.
 func echoInitializer(p handler.Pipeline) error {
 	_ = p.AddLast(
 		proto.NewFrameCodec(),
-		proto.NewProtocolHandler(func(action string, data []byte) (any, error) {
-			return map[string]any{"action": action, "data": json.RawMessage(data)}, nil
-		}),
+		demoProtocol,
 	)
 	return nil
 }
@@ -34,15 +39,17 @@ var (
 	multicore  bool
 	numWorkers int
 	lockThread bool
+	idleTime   time.Duration
 )
 
 func runServer() {
 	addr := fmt.Sprintf("%s://%s:%d", viper.GetString("server.network"), viper.GetString("server.host"), viper.GetInt("server.port"))
 	options := &reactor.ServerOptions{
-		Multicore:  viper.GetBool("server.multicore"),
-		NumWorkers: viper.GetInt("server.numWorkers"),
-		Listener:   addr,
-		LockThread: viper.GetBool("server.lockThread"),
+		Multicore:   viper.GetBool("server.multicore"),
+		NumWorkers:  viper.GetInt("server.numWorkers"),
+		Listener:    addr,
+		LockThread:  viper.GetBool("server.lockThread"),
+		IdleTimeout: viper.GetDuration("server.idleTimeout"),
 	}
 	newReactor, err := reactor.NewReactor(options, nil, nil, echoInitializer, nil)
 	if err != nil {
@@ -90,6 +97,7 @@ func main() {
 	rootCmd.PersistentFlags().BoolVar(&multicore, "multicore", true, "multicore")
 	rootCmd.PersistentFlags().IntVar(&numWorkers, "workers", 10, "number of workers")
 	rootCmd.PersistentFlags().BoolVar(&lockThread, "lockThread", true, "lock thread")
+	rootCmd.PersistentFlags().DurationVar(&idleTime, "idleTimeout", 0, "close connections silent for this long (e.g. 90s; 0 disables)")
 
 	// bind
 	err := viper.BindPFlag("server.host", rootCmd.PersistentFlags().Lookup("host"))
@@ -118,6 +126,11 @@ func main() {
 		return
 	}
 	err = viper.BindPFlag("server.lockThread", rootCmd.PersistentFlags().Lookup("lockThread"))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "bind config error: %s\n", err)
+		return
+	}
+	err = viper.BindPFlag("server.idleTimeout", rootCmd.PersistentFlags().Lookup("idleTimeout"))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "bind config error: %s\n", err)
 		return

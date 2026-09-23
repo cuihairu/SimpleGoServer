@@ -113,12 +113,16 @@ S  -- PUBLISH action="ticks" data=... ------------> C1  （以及 C2、C3…）
 ## 心跳
 
 `PING` 帧立即得到同 StreamId 的 `PONG`；`ProtocolHandler.Stats()` 暴露
-收发计数供监控。客户端可按需探测（`client.Ping`）。
+收发计数供监控。客户端按需探测用 `client.Ping(timeout)`；需要持续保活时
+用 `client.KeepAlive(interval, pingTimeout)`——它按固定间隔自动发 PING，
+一旦探测失败（写失败或超时）即判定链路死亡，主动关闭客户端并唤醒所有
+`Done()` 等待者，调用方拿到返回的 stop 函数可随时停掉循环。
 
 服务端侧的死连接回收由 reactor 层的空闲超时承担：`ServerOptions.IdleTimeout`
 大于 0 时，静默超过该时限的连接被强制关闭（读 deadline 到期），任何收到的
-帧——心跳或业务流量——都会重置计时。因此"心跳保活 + 服务端空闲回收"
-组合起来即可检测并清理拔网线式的半开连接。
+帧——心跳或业务流量——都会重置计时。因此完整的心跳方案是两端配合的：
+客户端 `KeepAlive` 既保住自己不被服务端回收，又在 `interval +
+pingTimeout` 内发现死链；服务端 `IdleTimeout` 清理不说话的僵尸连接。
 
 ## 优雅关闭
 
