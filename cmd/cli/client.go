@@ -22,6 +22,7 @@ func main() {
 	topic := flag.String("subscribe", "", "topic to subscribe; with -watch keeps receiving pushes")
 	watch := flag.Duration("watch", 0, "keep running for this long after the request (e.g. 30s)")
 	timeout := flag.Duration("timeout", 5*time.Second, "per-request timeout")
+	keepalive := flag.Duration("keepalive", 30*time.Second, "ping interval, keeps the connection alive through server idle timeouts (0 disables)")
 	flag.Parse()
 
 	eventCh := make(chan *proto.Frame, 16)
@@ -41,6 +42,13 @@ func main() {
 	defer func() {
 		_ = client.CloseGracefully(*timeout)
 	}()
+
+	// a watching subscriber only receives, so the server's idle timeout
+	// would eventually reap the connection; ping periodically to prevent it
+	if *keepalive > 0 {
+		stop := client.KeepAlive(*keepalive, *timeout)
+		defer stop()
+	}
 
 	if *topic != "" {
 		if err := client.Subscribe(*topic, *timeout); err != nil {
@@ -83,7 +91,7 @@ func main() {
 			case <-sigCh:
 				return
 			case <-client.Done():
-				fmt.Println("connection closed by server")
+				fmt.Println("connection closed")
 				return
 			}
 		}

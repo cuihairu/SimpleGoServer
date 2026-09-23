@@ -4,6 +4,8 @@
 //   - many concurrent connections, each multiplexing its own requests;
 //   - the client-side request/response API (Call) with per-call timeouts;
 //   - subscribing to a server-pushed topic and receiving PUBLISH frames;
+//   - client-side keepalive so a receive-only subscriber survives the
+//     server's idle timeout;
 //   - a graceful goodbye (CLOSE frame) instead of a silent disconnect.
 //
 // Start the server first, then:
@@ -88,6 +90,12 @@ func runClient(addr string, id, requests int, timeout, subscribeFor time.Duratio
 			return result{id: id, err: fmt.Errorf("subscribe: %w", err)}
 		}
 		fmt.Printf("client %d: subscribed to \"ticks\"\n", id)
+		// a subscriber only receives frames, so the server's idle timeout
+		// would eventually reap this otherwise silent connection — keep
+		// it alive with periodic pings. The interval must stay well under
+		// the server's IdleTimeout (60s in the echo-server example).
+		stopKeepAlive := client.KeepAlive(15*time.Second, timeout)
+		defer stopKeepAlive()
 		go collectPushes(pushes, subscribeFor)
 	}
 

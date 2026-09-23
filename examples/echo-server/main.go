@@ -5,6 +5,7 @@
 //     reactor pipeline;
 //   - request/response handling with plain functions returning (value, error);
 //   - server-initiated publish/subscribe broadcasts;
+//   - dead-link handling: server-side idle timeout + client-side keepalive;
 //   - graceful shutdown on SIGINT/SIGTERM.
 //
 // Start it and point the concurrent-client example at it:
@@ -47,6 +48,7 @@ func handleDemo(action string, data []byte) (any, error) {
 func main() {
 	addr := flag.String("addr", "127.0.0.1:8080", "listen address")
 	broadcastEvery := flag.Duration("broadcast", 2*time.Second, "interval of the ticks topic broadcast (0 disables)")
+	idle := flag.Duration("idle", 60*time.Second, "close connections silent for this long (0 disables)")
 	flag.Parse()
 
 	// One shared protocol handler for every connection: it is safe for
@@ -64,6 +66,11 @@ func main() {
 
 	options := &reactor.ServerOptions{
 		Listener: "tcp://" + *addr,
+		// reap connections that stay silent for this long; any received
+		// frame — heartbeat or business traffic — resets the timer, so
+		// keepalive clients (see concurrent-client) survive it while a
+		// dead peer is cleaned up instead of leaking a socket
+		IdleTimeout: *idle,
 	}
 	server, err := reactor.NewReactor(options, nil, nil, initializer, nil)
 	if err != nil {
