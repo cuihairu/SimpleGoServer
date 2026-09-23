@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net"
 	"runtime"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -26,7 +25,7 @@ type Worker struct {
 	pipelineInitializer handler.PipelineInitializer
 	eventListener       event.Listener
 	registry            *ConnectionRegistry
-	wg                  *sync.WaitGroup
+	group               *WorkerGroup
 }
 
 func (w *Worker) Id() string {
@@ -42,7 +41,12 @@ type WorkerGroup struct {
 	opts          pkg.Options
 	eventListener event.Listener
 	registry      *ConnectionRegistry
-	wg            *sync.WaitGroup
+
+	// active counts in-flight connection handlers. A shared sync.WaitGroup
+	// would be wrong here: handlers start dynamically as connections
+	// arrive, and Add racing a Wait is undefined behavior for WaitGroup.
+	// An atomic counter read by polling (see AwaitDone) has no such rule.
+	active atomic.Int32
 }
 
 func NewWorkerGroup(opts pkg.Options, ctx context.Context, eventListener event.Listener, pipelineInitializer handler.PipelineInitializer, balancer pkg.Balancer[*Worker]) (*WorkerGroup, error) {
@@ -62,10 +66,10 @@ func NewWorkerGroup(opts pkg.Options, ctx context.Context, eventListener event.L
 		balancer = balancerImpl.NewAdaptiveBalancer[*Worker]()
 	}
 	registry := NewConnectionRegistry()
-	wg := &sync.WaitGroup{}
+	group := &WorkerGroup{eventListener: eventListener, registry: registry}
 
 	for i := 0; i < serverOptions.NumWorkers; i++ {
-		worker, err := NewWorker(ctx, fmt.Sprintf("worker:%d", i), eventListener, pipelineInitializer, serverOptions.GetLockThread(), registry, wg)
+		worker, err := NewWorker(ctx, fmt.Sprintf("worker:%d", i), eventListener, pipelineInitializer, serverOptions.GetLockThread(), registry, group)
 		if err != nil {
 			eventListener.OnError(err)
 			return nil, err
@@ -76,7 +80,8 @@ func NewWorkerGroup(opts pkg.Options, ctx context.Context, eventListener event.L
 			return nil, err
 		}
 	}
-	return &WorkerGroup{balancer: balancer, eventListener: eventListener, registry: registry, wg: wg}, nil
+	group.balancer = balancer
+	return group, nil
 }
 
 func (g *WorkerGroup) Start() {
@@ -116,24 +121,28 @@ func (g *WorkerGroup) Stop() {
 	})
 }
 
-// AwaitDone waits for all in-flight connection goroutines to finish, or
-// until the timeout elapses, and reports whether they finished. Call it only
-// after every worker has stopped, so no new waiters can join the WaitGroup.
+// handlerStarted registers a handler that is about to run. It is called
+// before the handler goroutine starts so AwaitDone can never observe an
+// unregistered in-flight handler.
+func (g *WorkerGroup) handlerStarted() { g.active.Add(1) }
+
+// handlerFinished unregisters a handler once it has returned.
+func (g *WorkerGroup) handlerFinished() { g.active.Add(-1) }
+
+// AwaitDone waits for all in-flight connection handlers to finish, or until
+// the timeout elapses, and reports whether they finished. Call it only after
+// the worker loops have stopped, so no new handler can start. It polls the
+// atomic count: handlers finishing wake nobody, but this runs once per
+// shutdown, so a 10ms tick costs nothing.
 func (g *WorkerGroup) AwaitDone(timeout time.Duration) bool {
-	done := make(chan struct{})
-	go func() {
-		g.wg.Wait()
-		close(done)
-	}()
-	select {
-	case <-done:
-		return true
-	case <-time.After(timeout):
-		return false // the Wait goroutine ends once the last handler returns
+	deadline := time.Now().Add(timeout)
+	for g.active.Load() > 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
 	}
+	return g.active.Load() == 0
 }
 
-func NewWorker(parent context.Context, id string, eventListener event.Listener, pipelineInitializer handler.PipelineInitializer, lockThread bool, registry *ConnectionRegistry, wg *sync.WaitGroup) (*Worker, error) {
+func NewWorker(parent context.Context, id string, eventListener event.Listener, pipelineInitializer handler.PipelineInitializer, lockThread bool, registry *ConnectionRegistry, group *WorkerGroup) (*Worker, error) {
 	ctx, cancel := context.WithCancel(parent)
 	return &Worker{
 		ctx:                 ctx,
@@ -144,7 +153,7 @@ func NewWorker(parent context.Context, id string, eventListener event.Listener, 
 		pipelineInitializer: pipelineInitializer,
 		eventListener:       eventListener,
 		registry:            registry,
-		wg:                  wg,
+		group:               group,
 	}, nil
 }
 
@@ -167,10 +176,16 @@ func (w *Worker) Run() {
 	for {
 		select {
 		case c := <-w.newCh:
-			// counting happens before the goroutine starts so a concurrent
-			// AwaitDone can never observe an unregistered in-flight handler
-			w.wg.Add(1)
-			go w.handleConnection(c)
+			// registration happens here, on the worker loop, not inside the
+			// handler goroutine: by the time the connection is visible to a
+			// concurrent AwaitDone (active) it is equally visible to the
+			// drain count and to Registry().CloseAll, so shutdown never
+			// observes three different stories about one connection
+			lc := &lifecycleConn{Conn: c}
+			w.registry.Add(lc)
+			w.group.handlerStarted()
+			w.count.Add(1)
+			go w.handleConnection(lc)
 		case <-w.ctx.Done():
 			w.closePending()
 			return
@@ -216,23 +231,25 @@ func (c *lifecycleConn) Close() error {
 	return c.Conn.Close()
 }
 
-func (w *Worker) handleConnection(conn net.Conn) {
-	lc := &lifecycleConn{Conn: conn}
-	w.registry.Add(lc)
-	defer w.wg.Done()
-
+func (w *Worker) handleConnection(lc *lifecycleConn) {
 	pipeline := handlerImpl.NewPipeline(lc)
 	err := w.pipelineInitializer(pipeline)
 	if err != nil {
+		// a broken initializer is a programming error; undo the
+		// registration the worker loop already performed, then crash
 		w.eventListener.OnError(err)
+		_ = lc.Close()
+		w.registry.Remove(lc)
+		w.count.Add(-1)
+		w.group.handlerFinished()
 		panic(err)
 	}
-	w.count.Add(1)
 	defer func() {
 		_ = lc.Close()
 		w.registry.Remove(lc)
 		pipeline.FireInactive(nil)
 		w.count.Add(-1)
+		w.group.handlerFinished()
 	}()
 	defer func() {
 		if e := recover(); e != nil {

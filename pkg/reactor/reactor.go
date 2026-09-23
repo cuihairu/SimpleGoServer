@@ -12,7 +12,9 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"runtime"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -30,6 +32,10 @@ type Reactor struct {
 	pipelineInitializer handler.PipelineInitializer
 	logger              *log.Logger
 	stopOnce            sync.Once
+	// stopping is set just before the listener closes so the accept loop
+	// can tell a shutdown close from a real accept failure and exit
+	// quietly instead of spinning on error logs for the whole drain
+	stopping atomic.Bool
 }
 
 var _ event.Group = (*Reactor)(nil)
@@ -68,6 +74,7 @@ func NewReactor(opts pkg.Options, logger *log.Logger, eventListener event.Listen
 		ctx:           ctx,
 		cancelFunc:    ctxCancel,
 		eventListener: eventListener,
+		logger:        logger,
 	}
 	reactor.graceful = utils.NewGraceful(func(signal os.Signal) {
 		reactor.ShutdownGracefully()
@@ -94,6 +101,10 @@ func (r *Reactor) Run() {
 		}
 		conn, err := r.listener.Accept()
 		if err != nil {
+			if r.stopping.Load() {
+				// listener closed by shutdown; expected, not an error
+				return
+			}
 			select {
 			case <-r.ctx.Done():
 				// listener closed while shutting down; expected error
@@ -140,6 +151,7 @@ const defaultDrainTimeout = 10 * time.Second
 func (r *Reactor) ShutdownWithTimeout(timeout time.Duration) error {
 	r.stopOnce.Do(func() {
 		// stage 1: stop accepting
+		r.stopping.Store(true)
 		_ = r.listener.Close()
 		// stage 2: give existing connections a chance to drain
 		deadline := time.Now().Add(timeout)
@@ -155,6 +167,11 @@ func (r *Reactor) ShutdownWithTimeout(timeout time.Duration) error {
 		r.workers.Stop()
 		if !r.workers.AwaitDone(handlersExitTimeout) {
 			r.eventListener.OnError("shutdown: handlers did not exit in time")
+			// a handler that outlives shutdown is a leak; dump every
+			// goroutine stack so the stuck handler is identifiable
+			buf := make([]byte, 1<<20)
+			n := runtime.Stack(buf, true)
+			r.logger.Printf("goroutine dump on stuck shutdown:\n%s", buf[:n])
 		}
 		r.eventListener.OnShutdown()
 	})
@@ -188,6 +205,7 @@ func (r *Reactor) Next() event.Loop {
 func (r *Reactor) Stop() error {
 	// cancel wakes the accept loop, closing the listener unblocks a pending
 	// Accept so Run can observe the cancelled context and return
+	r.stopping.Store(true)
 	r.cancelFunc()
 	return r.listener.Close()
 }

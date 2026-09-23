@@ -25,26 +25,26 @@ func echoInitializer(p handler.Pipeline) error {
 }
 
 // newTestOptions binds the reactor to an ephemeral loopback port.
-func newTestOptions(t *testing.T) pkg.Options {
-	t.Helper()
+func newTestOptions(tb testing.TB) pkg.Options {
+	tb.Helper()
 	opts := NewServerOptions()
 	opts.Listener = "tcp://127.0.0.1:0"
 	return opts
 }
 
-func startTestReactor(t *testing.T) *Reactor {
-	t.Helper()
-	reactor, err := NewReactor(newTestOptions(t), nil, nil, echoInitializer, nil)
+func startTestReactor(tb testing.TB) *Reactor {
+	tb.Helper()
+	reactor, err := NewReactor(newTestOptions(tb), nil, nil, echoInitializer, nil)
 	if err != nil {
-		t.Fatalf("NewReactor(): %v", err)
+		tb.Fatalf("NewReactor(): %v", err)
 	}
 	go reactor.Run()
-	t.Cleanup(func() { _ = reactor.ShutdownWithTimeout(time.Second) })
+	tb.Cleanup(func() { _ = reactor.ShutdownWithTimeout(time.Second) })
 	return reactor
 }
 
-func waitListening(t *testing.T, reactor *Reactor) {
-	t.Helper()
+func waitListening(tb testing.TB, reactor *Reactor) {
+	tb.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		conn, err := net.DialTimeout("tcp", reactor.Addr().String(), 200*time.Millisecond)
@@ -54,7 +54,7 @@ func waitListening(t *testing.T, reactor *Reactor) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	t.Fatalf("reactor never started listening on %s", reactor.Addr())
+	tb.Fatalf("reactor never started listening on %s", reactor.Addr())
 }
 
 func TestReactorServesProtocolEcho(t *testing.T) {
