@@ -136,4 +136,4 @@ pkg/
 docs/              设计取舍与协议说明（Analysis.md、Proto.md）
 ```
 
-[设计取舍与需求分析说明文档](docs/Analysis.md)
+[设计取舍与需求分析说明文档](docs/Analysis.md) ｜ [自定义协议说明](docs/Proto.md)
