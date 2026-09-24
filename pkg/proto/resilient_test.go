@@ -2,6 +2,7 @@ package proto
 
 import (
 	"errors"
+	"net"
 	"testing"
 	"time"
 )
@@ -110,13 +111,39 @@ func TestResilientClientResubscribesWhenSessionExpired(t *testing.T) {
 // with the server gone the reconnect loop keeps backing off, the client
 // stays open (drops are recoverable), and Close ends everything cleanly.
 func TestResilientClientSurvivesDeadServer(t *testing.T) {
-	addr, _ := startTCPServer(t, nil)
-	rc := NewResilientClient(addr, nil, &ResilientOptions{BackoffStart: 10 * time.Millisecond, BackoffMax: 50 * time.Millisecond})
+	// the test owns the listener because it must kill the whole server,
+	// not just the current connection — startTCPServer's cleanup would be
+	// too late for that
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	ph := NewProtocolHandler(nil)
+	t.Cleanup(func() {
+		ph.Close()
+		_ = listener.Close()
+	})
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			go serveConn(conn, ph)
+		}
+	}()
+
+	rc := NewResilientClient(listener.Addr().String(), nil, &ResilientOptions{BackoffStart: 10 * time.Millisecond, BackoffMax: 50 * time.Millisecond})
 	defer rc.Close()
 	if err := rc.Connect(2 * time.Second); err != nil {
 		t.Fatalf("Connect(): %v", err)
 	}
 
+	// close the listener first: with no server to accept, the reconnect
+	// loop deterministically never succeeds. The reverse order raced — the
+	// loop could re-dial before the server died and "Call must fail" would
+	// flake (CI caught exactly that under load).
+	_ = listener.Close()
 	killCurrent(t, rc)
 
 	// drops do not close the client; calls fail while the server is gone
