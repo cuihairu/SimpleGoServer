@@ -133,6 +133,27 @@ func TestBalancerContract_Adaptive(t *testing.T) {
 	})
 }
 
+// TestIPHashingBalancerReplicaClamp: replicas below three would make the
+// ring degenerate (too few virtual nodes to spread keys), so the
+// constructor must lift it to the floor.
+func TestIPHashingBalancerReplicaClamp(t *testing.T) {
+	b := NewIPHashingBalancer[*FakeBackend](1)
+	if err := b.Register(mkFake("only")); err != nil {
+		t.Fatal(err)
+	}
+	// three replicas of one backend: every key resolves to it, and the
+	// ring actually has three virtual entries backing it up
+	for _, key := range []string{"a", "b", "c", "192.168.0.1:1"} {
+		next, err := b.Next(key)
+		if err != nil {
+			t.Fatalf("Next(%q): %v", key, err)
+		}
+		if next.Id() != "only" {
+			t.Fatalf("Next(%q) = %s, want the only backend", key, next.Id())
+		}
+	}
+}
+
 // TestLeastConnectionsBalancerUpdateCountRotates covers the
 // updateCount=true mode: every pick bumps the winner's count, which turns
 // least-connections into a rotation — ten picks over two idle backends

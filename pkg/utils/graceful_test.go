@@ -110,3 +110,20 @@ func TestGracefulStop(t *testing.T) {
 		t.Fatal("Wait did not return after Stop")
 	}
 }
+
+// TestGracefulReloadMethod covers the programmatic Reload: it fires the
+// reload callback directly, without any signal involved.
+func TestGracefulReloadMethod(t *testing.T) {
+	reloaded := make(chan struct{})
+	graceful := NewGraceful(func(os.Signal) {
+		t.Error("shutdown callback must not run on Reload")
+	}, func() { close(reloaded) })
+
+	graceful.Reload()
+	select {
+	case <-reloaded:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Reload() did not run the reload callback")
+	}
+	graceful.Stop()
+}
