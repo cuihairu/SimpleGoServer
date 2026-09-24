@@ -110,13 +110,19 @@ go test ./pkg/reactor -run '^$' -bench StreamedCall -benchmem
    6.7ms、proto.Client 42.4ms——差额与 EncodeJSON 的开销吻合。
    修复为手工拼装 envelope（RawMessage 透传、字节级等价有测试钉住），
    EncodeJSON 降到 8.6ms（残余为 string 必经的首次 marshal）。
-6. 修复后端到端仍测不出干净改善：本机 load 在 20~60 间波动，1MiB 档
-   单轮 86~709ms 乱跳；修复前后交替采样中位数 195ms→134ms（方向
-   一致但无统计力）。**空载终审清单**：① 重跑 StreamedCall 全档位；
-   ② 重跑 A/B/C 对照看 C 与 C' 的残差（若 C' 也降到亚毫秒，说明
-   ~50MB/s 传输疑点同样是双重编码的伴生效应；若 C' 仍 ~6ms，则
-   服务端 ReadFull 读模式另有独立成本）；③ 复核客户端 conn 慢于
-   server 端的时间线是否整体消失。
+6. **终审（修复后同负载带复采，load 19~29）**：
+   - StreamedCall 全档位：1KiB 258→186µs（-28%）、1MiB 109→73ms
+     （9.6→14.5MB/s，-33%）、4MiB 411→260ms（10→16.2MB/s，-37%），
+     分配数 98→93（1KiB 档 55→56，新增的 action 转义小分配）。
+   - EncodeJSON 交替对照（worktree 切换修复前后、同机同时刻）：
+     修复前中位 ~26.5ms（17~60ms 大幅波动）、修复后 ~10.5ms
+     （4~14ms）；以同轮 json.Marshal(string) 为基线归一，开销从
+     ~6.6 倍降到 ~2.1 倍——即「单次 marshal + 手拼」的理论形态。
+   - 单轮 C/C' 复测（各只采 1~3 轮）噪声高达 2 倍，不足为凭；
+     C' 残差 ~6~13ms 提示服务端 ReadFull 读模式在负载下另有
+     ~10ms 级独立成本，留作后续优化观察点，不构成回归。
+   - 结论：双重编码修复在单元级与端到端（同带中位）两个层面
+     确证有效；剩余吞吐仍受机器负载支配，绝对值以空载环境为准。
 
 ## 解读
 
