@@ -168,9 +168,34 @@ func TestReactorReapsIdleConnections(t *testing.T) {
 	t.Fatalf("idle connection was closed but its handler never exited (count=%d)", reactor.workers.TotalCount())
 }
 
+// waitCount polls until the worker table is seen holding exactly want
+// connections, failing after the budget. "Seen once" semantics on
+// purpose: a late-accepted probe connection (Dial succeeding does not
+// mean the server has accepted it — the probe can enter the table at
+// any moment during a test and reaps itself on EOF) makes the count
+// transiently overshoot, so a steady-state wait must tolerate it; and
+// in idle-reaping tests a long wait would fight the server's own idle
+// reaper, which is correct to fire once traffic stops.
+func waitCount(t *testing.T, reactor *Reactor, want int) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if got := reactor.workers.TotalCount(); got == want {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("connection count = %d, want %d (not seen within 5s)",
+		reactor.workers.TotalCount(), want)
+}
+
 func TestReactorKeepsActiveConnectionsAlive(t *testing.T) {
 	reactor := startTestReactorWithIdle(t, 300*time.Millisecond)
 	waitListening(t, reactor)
+
+	// Baseline before Dialing: the client's connection is the +1 this
+	// test asserts on, so a late probe cannot skew the number.
+	base := reactor.workers.TotalCount()
 
 	client, err := proto.Dial(reactor.Addr().String(), nil)
 	if err != nil {
@@ -186,9 +211,7 @@ func TestReactorKeepsActiveConnectionsAlive(t *testing.T) {
 			t.Fatalf("call %d failed on a connection that should stay alive: %v", i, err)
 		}
 	}
-	if reactor.workers.TotalCount() != 1 {
-		t.Fatalf("connection count = %d after continuous traffic, want 1", reactor.workers.TotalCount())
-	}
+	waitCount(t, reactor, base+1)
 }
 
 // TestWorkerAddConnAfterStopRejectsConnection pins the shutdown race where
@@ -297,21 +320,16 @@ func TestReactorEventGroupAPI(t *testing.T) {
 	// Register hands the connection to a worker even though Run's accept
 	// loop is what normally feeds it; Unregister closes it, and the
 	// handler must release without the force-close stage.
+	//
+	// Asserts are baseline-relative: a probe connection from
+	// waitListening may still sit in the kernel backlog and enter the
+	// table at any moment during this test (CI stable, run 36059601446),
+	// so absolute counts transiently overshoot — see waitCount.
+	base := reactor.workers.TotalCount()
 	conn, peer := net.Pipe()
 	defer peer.Close()
 	reactor.Register(conn)
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) && reactor.workers.TotalCount() == 0 {
-		time.Sleep(20 * time.Millisecond)
-	}
-	if reactor.workers.TotalCount() != 1 {
-		t.Fatalf("connection count = %d after Register, want 1", reactor.workers.TotalCount())
-	}
+	waitCount(t, reactor, base+1)
 	reactor.Unregister(conn)
-	for time.Now().Before(deadline) && reactor.workers.TotalCount() != 0 {
-		time.Sleep(20 * time.Millisecond)
-	}
-	if reactor.workers.TotalCount() != 0 {
-		t.Fatalf("connection count = %d after Unregister, want 0", reactor.workers.TotalCount())
-	}
+	waitCount(t, reactor, base)
 }
