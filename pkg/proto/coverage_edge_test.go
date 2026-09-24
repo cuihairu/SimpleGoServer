@@ -491,7 +491,24 @@ func TestClientZeroTimeoutContracts(t *testing.T) {
 		_, err := c2.Call("hang", "x", 0)
 		done <- err
 	}()
-	time.Sleep(250 * time.Millisecond) // let the call register its pending
+	// the pending entry must exist before kill(): it is what the close
+	// path fails the call with, so a sleep instead of this poll would
+	// bet the CI scheduler on a 250ms margin — and a lost bet left the
+	// bare receive hanging forever. Poll the map the registration
+	// actually lands in.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		c2.mu.Lock()
+		n := len(c2.pending)
+		c2.mu.Unlock()
+		if n == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the hung call never registered its pending entry")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 	kill()
 	if err := <-done; !errors.Is(err, ErrPendingClosed) {
 		t.Fatalf("zero-timeout call on a dropped conn = %v, want ErrPendingClosed", err)
