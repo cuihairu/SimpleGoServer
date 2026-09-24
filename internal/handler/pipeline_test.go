@@ -38,6 +38,18 @@ func (r *writeRecorder) HandleWrite(ctx handler.OutboundContext, message handler
 // would otherwise block that write forever.
 func newTestPipeline(t *testing.T) *LinkedPipeline {
 	t.Helper()
+	p, _ := newTestPipelineWithPeer(t)
+	return p
+}
+
+// newTestPipelineWithPeer also hands back the far end of the pipe so tests
+// can assert on what actually reached the connection. A drain goroutine
+// consumes the peer: a FireWrite test that reaches the head sentinel
+// writes through to it, and the pipe's synchronous semantics would
+// otherwise block that write forever. Tests that read the peer themselves
+// should use rawTestPipeline instead.
+func newTestPipelineWithPeer(t *testing.T) (*LinkedPipeline, net.Conn) {
+	t.Helper()
 	conn, peer := net.Pipe()
 	t.Cleanup(func() {
 		_ = conn.Close()
@@ -51,7 +63,20 @@ func newTestPipeline(t *testing.T) *LinkedPipeline {
 			}
 		}
 	}()
-	return NewPipeline(conn)
+	return NewPipeline(conn), peer
+}
+
+// rawTestPipeline wires a pipeline to a pipe without a drain goroutine:
+// the returned peer is the test's to read, including detecting a closed
+// connection as EOF.
+func rawTestPipeline(t *testing.T) (*LinkedPipeline, net.Conn) {
+	t.Helper()
+	conn, peer := net.Pipe()
+	t.Cleanup(func() {
+		_ = conn.Close()
+		_ = peer.Close()
+	})
+	return NewPipeline(conn), peer
 }
 
 func TestPipelineIndexLookups(t *testing.T) {

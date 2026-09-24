@@ -7,7 +7,12 @@ import (
 )
 
 type LeastConnectionsBalancer[T pkg.CountBackend] struct {
-	backends    []T
+	backends []T
+	// updateCount=true makes the balancer do the bookkeeping: every pick
+	// bumps the winner's count so repeated Next calls rotate across peers.
+	// There is no decrement hook — backends whose count must track live
+	// connections should maintain it themselves and pass false, or the
+	// count only ever grows.
 	updateCount bool
 	rwMutex     sync.RWMutex
 }

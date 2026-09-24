@@ -128,7 +128,10 @@ func (p *LinkedPipeline) AddHandler(position int, handlers ...handler.Handler) h
 		panic("invalid position")
 	}
 	if position == 0 {
-		return p.AddFirst(handlers)
+		// spread the slice: passing it as a single argument boxes the whole
+		// []Handler into one empty-interface value, which IsValidHandlers
+		// then rejects — AddHandler(0, ...) would always panic
+		return p.AddFirst(handlers...)
 	}
 	if position == p.size {
 		return p.AddLast(handlers...)
