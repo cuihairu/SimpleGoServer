@@ -35,10 +35,9 @@ func EncodeJSON(t FrameType, streamId uint32, action string, data any) (*Frame, 
 			raw = encoded
 		}
 	}
-	actionJSON, err := json.Marshal(action) // tiny; handles escaping
-	if err != nil {
-		return nil, err
-	}
+	// json.Marshal of a plain string cannot fail — there is deliberately
+	// no error path, like mustJSON and reply in protocol.go
+	actionJSON, _ := json.Marshal(action) // tiny; handles escaping
 	payload := make([]byte, 0, len(`{"action":`)+len(actionJSON)+len(`,"data":`)+len(raw)+1)
 	payload = append(payload, `{"action":`...)
 	payload = append(payload, actionJSON...)
