@@ -8,6 +8,9 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # a stuck runner must not burn the default 360-minute limit; the suite
+    # finishes in well under 20 minutes even on the 2-core runner
+    timeout-minutes: 30
     strategy:
       matrix:
         # oldest supported (matches go.mod) plus the current stable release

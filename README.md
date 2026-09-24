@@ -113,6 +113,9 @@ go test ./... -race   # 单元测试 + 端到端集成测试（含竞态与 goro
 
 # 性能基准：帧编解码 + 真实 TCP 端到端吞吐 / 并发扩展 / 连接建立拆除
 go test ./pkg/proto ./pkg/reactor -bench . -benchmem
+
+# 模糊测试：普通 go test 只跑种子语料；-fuzz 实际挖掘（示例 30 秒）
+go test ./pkg/proto -run '^$' -fuzz FuzzDecodeStream -fuzztime 30s
 ```
 
 命令行形态的服务端与协议客户端在 `cmd/server` 与 `cmd/cli`；更完整的
