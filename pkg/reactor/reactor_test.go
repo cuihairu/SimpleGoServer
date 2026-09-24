@@ -1,12 +1,15 @@
 package reactor
 
 import (
+	"context"
 	"encoding/json"
 	"net"
 	"strings"
 	"testing"
 	"time"
 
+	balancerImpl "github.com/cuihairu/simplegoserver/internal/balancer"
+	handlerImpl "github.com/cuihairu/simplegoserver/internal/handler"
 	"github.com/cuihairu/simplegoserver/pkg"
 	"github.com/cuihairu/simplegoserver/pkg/handler"
 	"github.com/cuihairu/simplegoserver/pkg/proto"
@@ -177,6 +180,71 @@ func TestReactorKeepsActiveConnectionsAlive(t *testing.T) {
 	}
 	if reactor.workers.TotalCount() != 1 {
 		t.Fatalf("connection count = %d after continuous traffic, want 1", reactor.workers.TotalCount())
+	}
+}
+
+// TestWorkerAddConnAfterStopRejectsConnection pins the shutdown race where
+// a connection is dispatched to a worker whose loop already returned: the
+// blind channel send would park it in a buffer nobody drains, leaking the
+// fd for the rest of the process lifetime.
+func TestWorkerAddConnAfterStopRejectsConnection(t *testing.T) {
+	worker, err := NewWorker(context.Background(), "worker:test", handlerImpl.NewErrorHandler(), echoInitializer, false, 0, NewConnectionRegistry(), &WorkerGroup{})
+	if err != nil {
+		t.Fatalf("NewWorker(): %v", err)
+	}
+	go worker.Run()
+	worker.Stop()
+
+	conn, peer := net.Pipe()
+	defer peer.Close()
+	if err := worker.AddConn(conn); err == nil {
+		t.Fatal("AddConn on a stopped worker must fail, not queue silently")
+	}
+	// the refused connection must be closed by AddConn itself
+	_ = peer.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if _, err := peer.Read(make([]byte, 1)); err == nil {
+		t.Fatal("expected the refused connection to be closed by AddConn")
+	}
+}
+
+func TestDispatchClosesConnectionWhenNoBackend(t *testing.T) {
+	group := &WorkerGroup{balancer: balancerImpl.NewAdaptiveBalancer[*Worker]()}
+	conn, peer := net.Pipe()
+	defer peer.Close()
+	if err := group.Dispatch(conn); err == nil {
+		t.Fatal("Dispatch with no backends must report an error")
+	}
+	_ = peer.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if _, err := peer.Read(make([]byte, 1)); err == nil {
+		t.Fatal("expected the rejected connection to be closed by Dispatch")
+	}
+}
+
+// TestReactorRunExitsWhenListenerClosedExternally covers the accept loop's
+// closed-listener exit: closing the listener outside the shutdown path used
+// to leave Run spinning on accept errors forever.
+func TestReactorRunExitsWhenListenerClosedExternally(t *testing.T) {
+	reactor, err := NewReactor(newTestOptions(t), nil, nil, echoInitializer, nil)
+	if err != nil {
+		t.Fatalf("NewReactor(): %v", err)
+	}
+	done := make(chan struct{})
+	go func() {
+		reactor.Run()
+		close(done)
+	}()
+	waitListening(t, reactor)
+
+	_ = reactor.listener.Close() // not via shutdown: stopping stays false
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not exit after the listener was closed externally")
+	}
+
+	// finish the lifecycle so worker loops and handlers are released
+	if err := reactor.ShutdownWithTimeout(time.Second); err != nil {
+		t.Fatalf("ShutdownWithTimeout(): %v", err)
 	}
 }
 

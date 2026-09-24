@@ -2,6 +2,7 @@ package reactor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	handlerImpl "github.com/cuihairu/simplegoserver/internal/handler"
 	"github.com/cuihairu/simplegoserver/pkg"
@@ -17,9 +18,6 @@ import (
 	"sync/atomic"
 	"time"
 )
-
-type SlaveRector struct {
-}
 
 type Reactor struct {
 	opts                pkg.Options
@@ -69,6 +67,8 @@ func NewReactor(opts pkg.Options, logger *log.Logger, eventListener event.Listen
 	group, err := NewWorkerGroup(opts, ctx, eventListener, pipelineInitializer, balancer)
 	if err != nil {
 		ctxCancel()
+		// the listener is already bound; giving up must not leak it
+		_ = listener.Close()
 		eventListener.OnError(err)
 		return nil, err
 	}
@@ -97,6 +97,9 @@ func (r *Reactor) Reload() {
 func (r *Reactor) Run() {
 	r.eventListener.OnStartup()
 	r.workers.Start()
+	// backoff for transient accept failures (fd exhaustion and friends):
+	// without it a persistently failing listener busy-loops on error logs
+	var acceptDelay time.Duration
 	for {
 		select {
 		case <-r.ctx.Done():
@@ -116,9 +119,28 @@ func (r *Reactor) Run() {
 				return
 			default:
 			}
+			// closed from outside the shutdown path (misuse, tests): the
+			// listener will never yield connections again, so spinning on
+			// retries would only burn CPU forever
+			if errors.Is(err, net.ErrClosed) {
+				r.eventListener.OnError(err)
+				return
+			}
+			// transient failure: back off exponentially, capped at 1s,
+			// mirroring net/http's accept-loop behavior
+			if acceptDelay == 0 {
+				acceptDelay = 5 * time.Millisecond
+			} else {
+				acceptDelay *= 2
+				if acceptDelay > time.Second {
+					acceptDelay = time.Second
+				}
+			}
 			r.eventListener.OnError(err)
+			time.Sleep(acceptDelay)
 			continue
 		}
+		acceptDelay = 0
 		r.eventListener.OnConnect(conn)
 		err = r.workers.Dispatch(conn)
 		if err != nil {
@@ -153,7 +175,12 @@ const defaultDrainTimeout = 10 * time.Second
 //     goroutine parked in conn.Read;
 //  4. stop the worker loops and wait briefly for handlers to return;
 //  5. fire the shutdown event.
+//
+// The returned error is non-nil when a connection handler outlived stage 4:
+// such a handler is leaking, and callers (supervisors, tests) deserve to
+// see that instead of an unconditional nil.
 func (r *Reactor) ShutdownWithTimeout(timeout time.Duration) error {
+	var err error
 	r.stopOnce.Do(func() {
 		// stage 1: stop accepting
 		r.stopping.Store(true)
@@ -171,7 +198,8 @@ func (r *Reactor) ShutdownWithTimeout(timeout time.Duration) error {
 		r.cancelFunc()
 		r.workers.Stop()
 		if !r.workers.AwaitDone(handlersExitTimeout) {
-			r.eventListener.OnError("shutdown: handlers did not exit in time")
+			err = fmt.Errorf("reactor: connection handlers did not exit within %s", handlersExitTimeout)
+			r.eventListener.OnError(err)
 			// a handler that outlives shutdown is a leak; dump every
 			// goroutine stack so the stuck handler is identifiable
 			buf := make([]byte, 1<<20)
@@ -180,7 +208,7 @@ func (r *Reactor) ShutdownWithTimeout(timeout time.Duration) error {
 		}
 		r.eventListener.OnShutdown()
 	})
-	return nil
+	return err
 }
 
 const handlersExitTimeout = 5 * time.Second

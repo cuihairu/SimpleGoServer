@@ -95,10 +95,12 @@ func (g *WorkerGroup) Start() {
 func (g *WorkerGroup) Dispatch(conn net.Conn) error {
 	worker, err := g.balancer.Next(conn.RemoteAddr().String())
 	if err != nil {
+		// the connection was never handed to a worker, so nobody owns its
+		// lifecycle: close it here or the fd leaks
+		_ = conn.Close()
 		return err
 	}
-	worker.AddConn(conn)
-	return nil
+	return worker.AddConn(conn)
 }
 
 // TotalCount reports the number of connections currently being handled.
@@ -159,8 +161,29 @@ func NewWorker(parent context.Context, id string, eventListener event.Listener, 
 	}, nil
 }
 
-func (w *Worker) AddConn(conn net.Conn) {
-	w.newCh <- conn
+// AddConn queues a connection for the worker loop. A full queue blocks the
+// caller on purpose: that is backpressure flowing back to the accept loop.
+// Once the worker has stopped, though, nothing will ever drain newCh, so
+// queueing blindly would leak the connection's fd (or block forever once
+// the buffer fills) — the connection is closed and an error returned then.
+func (w *Worker) AddConn(conn net.Conn) error {
+	select {
+	case w.newCh <- conn:
+		// Re-check after the send: ctx may have been cancelled while the
+		// send raced the loop's exit. If ctx is not done here, the loop is
+		// still alive (it only exits via ctx.Done), so its closePending
+		// will reap this entry on shutdown either way.
+		select {
+		case <-w.ctx.Done():
+			_ = conn.Close()
+			return fmt.Errorf("reactor: worker %s already stopped", w.id)
+		default:
+			return nil
+		}
+	case <-w.ctx.Done():
+		_ = conn.Close()
+		return fmt.Errorf("reactor: worker %s already stopped", w.id)
+	}
 }
 
 // Stop stops the worker loop. Connections already handed to handlers are
