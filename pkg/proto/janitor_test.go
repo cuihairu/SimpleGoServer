@@ -51,10 +51,17 @@ func TestSessionJanitorReapsExpiredSessions(t *testing.T) {
 	}
 	ph.mu.RUnlock()
 
-	// the client goes away; once the TTL passes the sweep must drop the
-	// session and its connection token
+	// the client goes away; the sweep drops the session and its
+	// connection token once the TTL passes. Reap is a pure function of
+	// lastSeen, so age the timestamp directly instead of sleeping past
+	// the TTL — a real sleep would bet the CI scheduler on a 30ms
+	// margin for a wait the test does not actually need.
 	_ = client.Close()
-	time.Sleep(ph.sessionTTL + 30*time.Millisecond)
+	ph.mu.RLock()
+	for _, s := range ph.sessions {
+		s.lastSeen.Store(time.Now().Add(-ph.sessionTTL - time.Second).UnixNano())
+	}
+	ph.mu.RUnlock()
 	ph.reapExpiredSessions()
 	ph.mu.RLock()
 	sessions := len(ph.sessions)
