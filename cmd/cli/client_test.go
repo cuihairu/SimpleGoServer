@@ -250,12 +250,31 @@ func TestRunSubscribeWatchReceivesPushesUntilTimer(t *testing.T) {
 	}
 }
 
+// waitSubscribed polls the server until the client's subscription shows
+// up. Subscribe completing proves the CLI has armed its signal handler:
+// run() registers signal.Notify before dialing, so anything observed on
+// the server afterwards cannot race the setup. Sleeping a fixed 400ms
+// here was a bet that 2-core CI schedulers finish the whole setup inside
+// the window — and a lost bet killed the whole test binary (same-process
+// SIGTERM with no handler).
+func waitSubscribed(t *testing.T, server *testServer, topic string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if server.protocol.Subscribers(topic) > 0 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("subscription to %q never became visible on the server", topic)
+}
+
 // TestRunSubscribeWatchesUntilSignal covers the implicit one-hour watch: a
 // trapped SIGTERM is the way out.
 func TestRunSubscribeWatchesUntilSignal(t *testing.T) {
 	server := startServer(t, echoHandler)
 	ch := runAsync("-addr", server.addr, "-subscribe", "ticks", "-timeout", "2s")
-	time.Sleep(400 * time.Millisecond) // dial + subscribe + signal handler setup
+	waitSubscribed(t, server, "ticks")
 	_ = syscall.Kill(syscall.Getpid(), syscall.SIGTERM)
 	if code := waitForCode(t, ch); code != 0 {
 		t.Fatalf("run() = %d, want 0 after the signal", code)
@@ -267,7 +286,7 @@ func TestRunSubscribeWatchesUntilSignal(t *testing.T) {
 func TestRunWatchReportsClosedConnection(t *testing.T) {
 	server := startServer(t, echoHandler)
 	ch := runAsync("-addr", server.addr, "-subscribe", "ticks", "-watch", "30s", "-keepalive", "0", "-timeout", "2s")
-	time.Sleep(400 * time.Millisecond)
+	waitSubscribed(t, server, "ticks")
 	server.reactor.ShutdownGracefully()
 	if code := waitForCode(t, ch); code != 0 {
 		t.Fatalf("run() = %d, want 0 once the connection closed", code)

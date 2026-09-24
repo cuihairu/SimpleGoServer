@@ -56,6 +56,24 @@ func run(args []string) int {
 	eventCh := make(chan *proto.Frame, 16)
 	onEvent := func(frame *proto.Frame) { eventCh <- frame }
 
+	// A subscriber is about to park in the watch loop, so trap the
+	// interrupt signals for the whole run, not just the loop: a Ctrl+C
+	// during dial / handshake / subscribe would otherwise kill the
+	// process outright and skip the deferred goodbye that makes the
+	// server release the connection at once. Buffered, so a signal that
+	// lands before the loop starts is consumed there rather than lost.
+	// Non-watch runs keep the default signal behavior untouched.
+	watchFor := *watch
+	if *topic != "" && watchFor == 0 {
+		watchFor = time.Hour // stay subscribed until interrupted
+	}
+	var sigCh chan os.Signal
+	if watchFor > 0 {
+		sigCh = make(chan os.Signal, 1)
+		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+		defer signal.Stop(sigCh)
+	}
+
 	var client protocolClient
 	if *resilient {
 		rc := proto.NewResilientClient(*addr, onEvent, nil)
@@ -125,13 +143,7 @@ func run(args []string) int {
 		}
 	}
 
-	watchFor := *watch
-	if *topic != "" && watchFor == 0 {
-		watchFor = time.Hour // stay subscribed until interrupted
-	}
 	if watchFor > 0 {
-		sigCh := make(chan os.Signal, 1)
-		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 		timer := time.NewTimer(watchFor)
 		defer timer.Stop()
 		for {
