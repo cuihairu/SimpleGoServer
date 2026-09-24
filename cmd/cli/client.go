@@ -40,7 +40,7 @@ func run(args []string) int {
 	fs := flag.NewFlagSet("client", flag.ContinueOnError)
 	addr := fs.String("addr", "127.0.0.1:8080", "server address")
 	action := fs.String("action", "", "request action (e.g. echo)")
-	data := fs.String("data", "", "request payload; raw JSON string")
+	data := fs.String("data", "", "request payload; raw JSON, anything else is sent as a JSON string")
 	topic := fs.String("subscribe", "", "topic to subscribe; with -watch keeps receiving pushes")
 	watch := fs.Duration("watch", 0, "keep running for this long after the request (e.g. 30s)")
 	timeout := fs.Duration("timeout", 5*time.Second, "per-request timeout")
@@ -111,7 +111,7 @@ func run(args []string) int {
 	if *action != "" {
 		var payload any
 		if *data != "" {
-			payload = json.RawMessage(*data)
+			payload = coerceJSONPayload(*data)
 		}
 		resp, err := client.Call(*action, payload, *timeout)
 		if err != nil {
@@ -149,6 +149,16 @@ func run(args []string) int {
 		}
 	}
 	return 0
+}
+
+// coerceJSONPayload passes well-formed JSON through untouched and wraps any
+// other input into a JSON string, so `-data hello` sends "hello" instead of
+// dying on a RawMessage marshal error.
+func coerceJSONPayload(data string) any {
+	if json.Valid([]byte(data)) {
+		return json.RawMessage(data)
+	}
+	return data
 }
 
 func printEvent(frame *proto.Frame) {

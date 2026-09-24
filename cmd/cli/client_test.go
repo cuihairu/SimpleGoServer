@@ -273,3 +273,25 @@ func TestRunWatchReportsClosedConnection(t *testing.T) {
 		t.Fatalf("run() = %d, want 0 once the connection closed", code)
 	}
 }
+
+// TestCoerceJSONPayload pins the -data ergonomics contract: raw JSON goes
+// through untouched, bare text is wrapped into a JSON string.
+func TestCoerceJSONPayload(t *testing.T) {
+	got := coerceJSONPayload(`{"a":1}`)
+	if _, ok := got.(json.RawMessage); !ok {
+		t.Fatalf("coerceJSONPayload(valid json) = %T, want json.RawMessage", got)
+	}
+	if got := coerceJSONPayload("hello"); got != "hello" {
+		t.Fatalf("coerceJSONPayload(bare text) = %v, want the raw string", got)
+	}
+}
+
+// TestRunCallSendsBareTextAsJSONString drives a full round trip with the
+// most natural -data input, the one that used to die on a marshal error.
+func TestRunCallSendsBareTextAsJSONString(t *testing.T) {
+	server := startServer(t, echoHandler)
+	code := run([]string{"-addr", server.addr, "-action", "echo", "-data", "hello-from-cli", "-timeout", "2s", "-keepalive", "0"})
+	if code != 0 {
+		t.Fatalf("run() = %d, want 0 for a bare-text payload", code)
+	}
+}
