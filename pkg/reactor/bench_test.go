@@ -5,6 +5,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -140,5 +141,41 @@ func BenchmarkReactorConnChurn(b *testing.B) {
 			b.Fatalf("server error: %s", resp.Err.Error)
 		}
 		_ = client.Close()
+	}
+}
+
+// BenchmarkReactorStreamedCall measures request/response round trips whose
+// payload exceeds the fragmentation threshold and is therefore split into
+// FlagMore frames on both directions. The 1KiB case is the unfragmented
+// baseline; the MiB cases show what streaming adds on top of the codec.
+//
+//	go test ./pkg/reactor -run '^$' -bench StreamedCall -benchmem
+func BenchmarkReactorStreamedCall(b *testing.B) {
+	reactor := startBenchReactor(b)
+	client, err := proto.Dial(reactor.Addr().String(), nil)
+	if err != nil {
+		b.Fatalf("Dial(): %v", err)
+	}
+	defer client.Close()
+	for _, size := range []int{1 << 10, 1 << 20, 4 << 20} {
+		b.Run(fmt.Sprintf("size=%dKiB", size>>10), func(b *testing.B) {
+			payload := strings.Repeat("x", size)
+			// the demo handler echoes the request back wrapped in its
+			// {"action":...,"data":...} envelope: one constant layer on
+			// top of the payload, plus the JSON string quotes around it
+			wrapper := `{"action":"bench","data":}`
+			want := size + len(wrapper) + 2
+			b.SetBytes(int64(size))
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				resp, err := client.Call("bench", payload, 30*time.Second)
+				if err != nil {
+					b.Fatalf("Call(): %v", err)
+				}
+				if !resp.OK() || len(resp.Data) != want {
+					b.Fatalf("unexpected echo: ok=%v len=%d want %d", resp.OK(), len(resp.Data), want)
+				}
+			}
+		})
 	}
 }

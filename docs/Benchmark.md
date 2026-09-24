@@ -48,6 +48,31 @@ go test ./pkg/reactor -run '^$' -bench . -benchmem -count 3
 | EchoClients clients=64 | ~160 µs | ~40 万 req/s |
 | ConnChurn（建连+1 请求+断开/次） | ~580 µs | ~1700 连接/秒 |
 
+### 流式大消息（`pkg/reactor`，StreamedCall）
+
+超过分片阈值（`MaxFrameSize - 64KiB`）的载荷在请求与响应两个方向都拆成
+`FlagMore` 分片帧，1KiB 档是不分片的基线：
+
+| 基准 | 载荷 | 分片数（单向） |
+| --- | --- | --- |
+| StreamedCall size=1KiB | 1 KiB | 1（基线） |
+| StreamedCall size=1MiB | 1 MiB | 2 |
+| StreamedCall size=4MiB | 4 MiB | 5 |
+
+复现：
+
+```bash
+go test ./pkg/reactor -run '^$' -bench StreamedCall -benchmem
+```
+
+采集注意事项：这组数据对**机器负载极其敏感**。首采期间系统 load 超过
+100（16 逻辑核），绝对值比低负载时失真约一个数量级（1KiB 基线本应与
+EchoClients clients=1 的 ~120µs 同量级，实测却到了毫秒级），因此不在此
+记录绝对数字——请以干净环境复现为准。基准的价值在于结构与回归对比：
+分片数只随载荷对数增长、每次往返的分配数不随载荷大小暴涨（聚合缓冲
+一次分配为主），若复现时分配数随分片数线性爆炸，即说明聚合路径出现
+了多余的中间拷贝。
+
 ## 解读
 
 1. **吞吐随客户端数近线性扩展**：1→8 客户端吞吐 ×10，8→64 再 ×5——
