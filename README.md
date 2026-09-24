@@ -109,7 +109,7 @@ go run ./examples/concurrent-client
 ```bash
 go build ./...        # 编译
 go vet ./...          # 静态检查
-go test ./... -race   # 单元测试 + 端到端集成测试（含竞态检测）
+go test ./... -race   # 单元测试 + 端到端集成测试（含竞态与 goroutine 泄漏检测）
 
 # 性能基准：帧编解码 + 真实 TCP 端到端吞吐 / 并发扩展 / 连接建立拆除
 go test ./pkg/proto ./pkg/reactor -bench . -benchmem
