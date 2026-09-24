@@ -1034,13 +1034,28 @@ func TestTopicCacheEviction(t *testing.T) {
 	if err := c.Subscribe("ticks", 2*time.Second); err != nil {
 		t.Fatalf("Subscribe(): %v", err)
 	}
-	// drain live pushes so the channel never blocks Publish; closing the
-	// channel on cleanup ends this goroutine
+	// drain live pushes so the channel never blocks Publish. Shutdown is
+	// ordered: cleanup closes the client first (its read loop exits, so no
+	// more `pushes <- f`), then releases the drain goroutine and waits for
+	// it. Closing the channel here instead raced that in-flight send — the
+	// CI race detector caught close(pushes) vs `pushes <- f`.
+	stop := make(chan struct{})
+	drained := make(chan struct{})
 	go func() {
-		for range pushes {
+		defer close(drained)
+		for {
+			select {
+			case <-stop:
+				return
+			case <-pushes:
+			}
 		}
 	}()
-	t.Cleanup(func() { close(pushes) })
+	t.Cleanup(func() {
+		_ = c.Close()
+		close(stop)
+		<-drained
+	})
 
 	total := topicCacheSize + 10
 	for i := 0; i < total; i++ {
