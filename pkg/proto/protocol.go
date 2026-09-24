@@ -174,7 +174,7 @@ func NewProtocolHandler(handleRequest RequestHandler) *ProtocolHandler {
 		closed:        make(chan struct{}),
 		sessionTTL:    defaultSessionTTL,
 	}
-	go p.sessionJanitor()
+	go p.sessionJanitor(janitorTickInterval)
 	return p
 }
 
@@ -200,8 +200,12 @@ func (p *ProtocolHandler) Close() {
 // (not a constant) so tests can shrink it instead of waiting a minute.
 var janitorTickInterval = time.Minute
 
-func (p *ProtocolHandler) sessionJanitor() {
-	ticker := time.NewTicker(janitorTickInterval)
+// The tick interval is read by the caller and passed in: a goroutine must
+// not read the mutable package var itself, or a test that restores it in a
+// defer races with a janitor that has not reached its first line yet (the
+// CI race detector caught exactly that).
+func (p *ProtocolHandler) sessionJanitor(interval time.Duration) {
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
 		select {

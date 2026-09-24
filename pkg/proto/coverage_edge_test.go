@@ -641,8 +641,11 @@ func TestSessionJanitorSweepsOnTick(t *testing.T) {
 	ph.sessions["stale"] = stale
 	ph.mu.Unlock()
 
-	// a second janitor picks up the shrunken interval; both exit on Close
-	go ph.sessionJanitor()
+	// a second janitor picks up the shrunken interval; both exit on Close.
+	// The interval is read here, on the test goroutine — the janitor itself
+	// only sees the captured value, so the deferred restore below cannot
+	// race with it.
+	go ph.sessionJanitor(janitorTickInterval)
 
 	deadline := time.Now().Add(2 * time.Second)
 	for {
