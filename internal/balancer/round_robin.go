@@ -23,13 +23,17 @@ func NewRoundRobinBalancer[T pkg.Backend]() *RoundRobinBalancer[T] {
 }
 
 func (b *RoundRobinBalancer[T]) Next(key string) (T, error) {
-	b.rwMutex.RLock()
-	defer b.rwMutex.RUnlock()
+	// a write lock, not RLock: Next advances b.current, and RLock would
+	// let concurrent Next calls race on that counter
+	b.rwMutex.Lock()
+	defer b.rwMutex.Unlock()
 	size := len(b.backends)
 	var backend T
 	if size == 0 {
 		return backend, errors.New("no backends registered")
 	}
+	// Unregister may have shrunk the list below the stored position
+	b.current %= size
 	backend = b.backends[b.current]
 	b.current = (b.current + 1) % size
 	return backend, nil

@@ -74,3 +74,26 @@ func TestIPHashingBalancer_Next(t *testing.T) {
 		t.Fatalf("next and next2 not equal")
 	}
 }
+
+// TestIPHashingBalancer_IterateVisitsEachBackendOnce pins the Iterate
+// contract: one visit per backend, not per virtual node — reactor's
+// Start/Stop hand every worker to Iterate, and per-replica visits would
+// start each worker several times over.
+func TestIPHashingBalancer_IterateVisitsEachBackendOnce(t *testing.T) {
+	a := NewFakeBackend("a", 1)
+	b := NewFakeBackend("b", 1)
+	balancer := NewIPHashingBalancer[*FakeBackend](4)
+	for _, backend := range []*FakeBackend{a, b} {
+		if err := balancer.Register(backend); err != nil {
+			t.Fatal(err)
+		}
+	}
+	visited := map[string]int{}
+	balancer.Iterate(func(backend *FakeBackend) bool {
+		visited[backend.Id()]++
+		return true
+	})
+	if len(visited) != 2 || visited["a"] != 1 || visited["b"] != 1 {
+		t.Fatalf("Iterate visited %v, want exactly one visit per backend", visited)
+	}
+}

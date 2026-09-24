@@ -25,8 +25,9 @@ func NewWeightedRoundRobinBalancer[T pkg.WeightBackend]() *WeightedRoundRobinBal
 }
 
 func (b *WeightedRoundRobinBalancer[T]) Next(key string) (T, error) {
-	b.rwMutex.RLock()
-	defer b.rwMutex.RUnlock()
+	// a write lock, not RLock: Next advances b.currentWeight
+	b.rwMutex.Lock()
+	defer b.rwMutex.Unlock()
 	size := len(b.backends)
 	var back T
 	if size == 0 {
@@ -73,6 +74,9 @@ func (b *WeightedRoundRobinBalancer[T]) Unregister(unregisterBackend T) error {
 	for i, back := range b.backends {
 		if back.Id() == unregisterBackend.Id() {
 			b.backends = append(b.backends[:i], b.backends[i+1:]...)
+			// keep totalWeight honest or the modulo spread grows and the
+			// distribution silently skews towards the fallback branch
+			b.totalWeight -= back.Weight()
 			return nil
 		}
 	}

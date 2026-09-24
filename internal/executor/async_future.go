@@ -10,15 +10,14 @@ import (
 )
 
 type AsyncFuture[T any] struct {
-	result     T
-	err        error
-	f          func(ctx context.Context) (T, error)
-	ctx        context.Context
-	cancel     context.CancelFunc
-	running    atomic.Bool
-	rwMutex    sync.RWMutex
-	doneCh     chan struct{}
-	isCanceled atomic.Bool
+	result  T
+	err     error
+	f       func(ctx context.Context) (T, error)
+	ctx     context.Context
+	cancel  context.CancelFunc
+	running atomic.Bool
+	rwMutex sync.RWMutex
+	doneCh  chan struct{}
 }
 
 func NewFuture[T any](ctx context.Context, f pkg.ActionWithReturn[T]) *AsyncFuture[T] {
@@ -38,8 +37,12 @@ func (f *AsyncFuture[T]) Do() {
 	result, err := f.f(f.ctx)
 	f.rwMutex.Lock()
 	defer f.rwMutex.Unlock()
-	if f.IsDone() {
+	// a Cancel racing the run already resolved the future — keep that
+	// result instead of overwriting it
+	select {
+	case <-f.doneCh:
 		return
+	default:
 	}
 	f.result = result
 	f.err = err
@@ -58,7 +61,10 @@ func (f *AsyncFuture[T]) GetWithTimeout(timeout time.Duration) (T, error) {
 	case <-time.After(timeout):
 		err := fmt.Errorf("timeout")
 		f.cancelWithErr(err)
-		return f.result, err
+		// result stays untouched here on purpose: Do() may be writing it
+		// right now (its write is lock-guarded, this read would not be)
+		var zero T
+		return zero, err
 	}
 }
 
@@ -67,12 +73,16 @@ func (f *AsyncFuture[T]) Cancel() {
 }
 
 func (f *AsyncFuture[T]) cancelWithErr(err error) {
+	// cancelling the ctx is safe to repeat and lets a still-running task
+	// observe the cancellation
+	f.cancel()
 	f.rwMutex.Lock()
 	defer f.rwMutex.Unlock()
-	if f.IsDone() {
-		return
+	select {
+	case <-f.doneCh:
+		return // already resolved by Do or an earlier cancel
+	default:
 	}
-	f.cancel()
 	var zero T
 	f.result = zero
 	f.err = err
@@ -80,9 +90,6 @@ func (f *AsyncFuture[T]) cancelWithErr(err error) {
 }
 
 func (f *AsyncFuture[T]) IsCancelled() bool {
-	if f.isCanceled.Load() {
-		return true
-	}
 	select {
 	case <-f.ctx.Done():
 		return true
@@ -91,14 +98,13 @@ func (f *AsyncFuture[T]) IsCancelled() bool {
 	}
 }
 
+// IsDone reports whether the future has resolved — Get would return
+// immediately. Done here always means "doneCh is closed": done and
+// cancelled used to be conflated, with cancelled futures reporting done
+// while Get still blocked forever on an unclosed doneCh.
 func (f *AsyncFuture[T]) IsDone() bool {
-	if f.IsCancelled() {
-		return true
-	}
 	select {
 	case <-f.doneCh:
-		return true
-	case <-f.ctx.Done():
 		return true
 	default:
 		return false

@@ -18,8 +18,21 @@ type AsyncExecutor[T any] struct {
 
 func (e *AsyncExecutor[T]) Submit(action pkg.ActionWithReturn[T]) pkg.Future[T] {
 	future := NewFuture[T](e.ctx, action)
-	e.futureCh <- future
-	return future
+	select {
+	case e.futureCh <- future:
+		// re-check after the send: a worker may already be gone, in which
+		// case the future would never be resolved and Get would block
+		// forever — hand back an explicitly cancelled one instead
+		select {
+		case <-e.ctx.Done():
+			future.Cancel()
+		default:
+		}
+		return future
+	case <-e.ctx.Done():
+		future.Cancel()
+		return future
+	}
 }
 
 func NewAsyncExecutor[T any](numWorker int) *AsyncExecutor[T] {
@@ -46,14 +59,27 @@ func (e *AsyncExecutor[T]) Start() {
 	}
 }
 
+// Stop cancels the executor: workers drain out through ctx.Done. The task
+// channels are deliberately not closed — a close would turn any concurrent
+// Submit/Execute send into a "send on closed channel" panic, and would
+// hand the workers zero values to call. Tasks submitted after Stop are
+// dropped without feedback (the Executor interface has no error return).
 func (e *AsyncExecutor[T]) Stop() {
 	e.cancel()
-	close(e.tasks)
-	close(e.futureCh)
 }
 
 func (e *AsyncExecutor[T]) Execute(task pkg.Action) {
-	e.tasks <- task
+	select {
+	case e.tasks <- task:
+		select {
+		case <-e.ctx.Done():
+			// executor stopped before a worker picked it up; dropped
+		default:
+		}
+		return
+	case <-e.ctx.Done():
+		// dropped: executor stopped
+	}
 }
 
 func (e *AsyncExecutor[T]) worker() {
@@ -61,8 +87,19 @@ func (e *AsyncExecutor[T]) worker() {
 	for {
 		select {
 		case t := <-e.tasks:
+			// Stop closes both channels; a closed channel makes this
+			// receive immediately ready with the zero value, and with
+			// ctx.Done also ready the select may pick either side — a
+			// nil action here would be a call of a nil func, i.e. a
+			// process-killing panic in a worker goroutine.
+			if t == nil {
+				continue
+			}
 			t(e.ctx)
 		case p := <-e.futureCh:
+			if p == nil {
+				continue
+			}
 			p.Do()
 		case <-e.ctx.Done():
 			return

@@ -106,8 +106,18 @@ func (I *IPHashingBalancer[T]) Size() int {
 func (I *IPHashingBalancer[T]) Iterate(f func(b T) bool) {
 	I.rwMutex.Lock()
 	defer I.rwMutex.Unlock()
+	// the ring holds one entry per virtual node; callers of Iterate expect
+	// one visit per backend (reactor Start/Stop route every worker through
+	// it), so dedupe by id
+	seen := make(map[string]struct{}, I.size)
 	for _, hash := range I.sortedHashList {
-		if !f(I.circle[hash]) {
+		backend := I.circle[hash]
+		id := backend.Id()
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		if !f(backend) {
 			break
 		}
 	}

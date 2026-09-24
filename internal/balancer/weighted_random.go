@@ -53,6 +53,11 @@ func (w *WeightedRandomBalancer[T]) buildPreSum() {
 func (w *WeightedRandomBalancer[T]) Register(WeightedBackend T) error {
 	w.rwMutex.Lock()
 	defer w.rwMutex.Unlock()
+	for _, back := range w.backends {
+		if back.Id() == WeightedBackend.Id() {
+			return nil
+		}
+	}
 	w.backends = append(w.backends, WeightedBackend)
 	w.buildPreSum()
 	return nil
@@ -61,9 +66,13 @@ func (w *WeightedRandomBalancer[T]) Register(WeightedBackend T) error {
 func (w *WeightedRandomBalancer[T]) Unregister(b T) error {
 	w.rwMutex.Lock()
 	defer w.rwMutex.Unlock()
-	for _, WeightedBackend := range w.backends {
-		if WeightedBackend.Id() == b.Id() {
-			w.backends = append(w.backends[:0], w.backends[1:]...)
+	// remove the matching entry itself — the old code dropped the first
+	// element no matter which backend matched, silently shifting every
+	// preSum index onto the wrong backend
+	for i, back := range w.backends {
+		if back.Id() == b.Id() {
+			w.backends = append(w.backends[:i], w.backends[i+1:]...)
+			break
 		}
 	}
 	w.buildPreSum()
