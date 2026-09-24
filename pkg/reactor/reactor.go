@@ -8,7 +8,6 @@ import (
 	"github.com/cuihairu/simplegoserver/pkg"
 	"github.com/cuihairu/simplegoserver/pkg/event"
 	"github.com/cuihairu/simplegoserver/pkg/handler"
-	"github.com/cuihairu/simplegoserver/pkg/utils"
 	"log"
 	"net"
 	"net/url"
@@ -19,13 +18,17 @@ import (
 	"time"
 )
 
+// Signal handling is left to the embedding program: cmd/server wires
+// utils.Graceful to ShutdownGracefully itself. A Reactor-internal Graceful
+// existed once but was never waited on — a dead signal path next to the
+// live one in main.
+
 type Reactor struct {
 	opts                pkg.Options
 	listener            net.Listener
 	workers             *WorkerGroup
 	cancelFunc          context.CancelFunc
 	ctx                 context.Context
-	graceful            *utils.Graceful
 	eventListener       event.Listener
 	pipelineInitializer handler.PipelineInitializer
 	logger              *log.Logger
@@ -81,11 +84,6 @@ func NewReactor(opts pkg.Options, logger *log.Logger, eventListener event.Listen
 		eventListener: eventListener,
 		logger:        logger,
 	}
-	reactor.graceful = utils.NewGraceful(func(signal os.Signal) {
-		reactor.ShutdownGracefully()
-	}, func() {
-		reactor.Reload()
-	})
 
 	return reactor, err
 }

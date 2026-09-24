@@ -16,7 +16,7 @@ type LinkedPipeline struct {
 func (p *LinkedPipeline) IndexOf(f func(handler.Handler) bool) int {
 	cur := p.head
 	for i := 0; ; i++ {
-		if f(cur) {
+		if f(cur.handler) {
 			return i
 		}
 		if cur = cur.next; cur == nil {
@@ -26,13 +26,15 @@ func (p *LinkedPipeline) IndexOf(f func(handler.Handler) bool) int {
 	return -1
 }
 
+// LastIndexOf scans from the tail back towards the head, returning the
+// node's index in the same index space IndexOf uses (head = 0).
 func (p *LinkedPipeline) LastIndexOf(f func(handler.Handler) bool) int {
 	cur := p.tail
-	for i := 0; ; i++ {
-		if f(cur) {
+	for i := p.size - 1; ; i-- {
+		if f(cur.handler) {
 			return i
 		}
-		if cur = cur.next; cur == nil {
+		if cur = cur.prev; cur == nil {
 			break
 		}
 	}

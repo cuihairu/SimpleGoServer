@@ -1,8 +1,10 @@
 package handler
 
 import (
-	"github.com/cuihairu/simplegoserver/pkg/handler"
 	"net"
+	"sync"
+
+	"github.com/cuihairu/simplegoserver/pkg/handler"
 )
 
 type NodeContext struct {
@@ -16,6 +18,12 @@ type NodeContext struct {
 	exceptionHandler handler.ExceptionHandler
 	inactiveHandler  handler.InactiveHandler
 	executorHandler  handler.ExecutorHandler
+
+	// per-connection attachment (e.g. a codec's partial-frame buffer);
+	// handlers may set it from pipeline callbacks on different goroutines,
+	// so access is guarded
+	attachMu   sync.RWMutex
+	attachment handler.Attachment
 }
 
 var _ handler.Context = (*NodeContext)(nil)
@@ -66,13 +74,15 @@ func (n *NodeContext) Close(exception error) {
 }
 
 func (n *NodeContext) Attachment() handler.Attachment {
-	//TODO implement me
-	panic("implement me")
+	n.attachMu.RLock()
+	defer n.attachMu.RUnlock()
+	return n.attachment
 }
 
 func (n *NodeContext) SetAttachment(attachment handler.Attachment) {
-	//TODO implement me
-	panic("implement me")
+	n.attachMu.Lock()
+	n.attachment = attachment
+	n.attachMu.Unlock()
 }
 
 var _ handler.ActiveContext = (*NodeContext)(nil)
