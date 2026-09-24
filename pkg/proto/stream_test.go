@@ -153,9 +153,12 @@ func TestCallStreamsLargePayload(t *testing.T) {
 	defer client.Close()
 
 	// 2MB of recognizable data: far above MaxFrameSize, so both the
-	// request and the echoed response must travel as fragments
+	// request and the echoed response must travel as fragments. The
+	// timeout is generous on purpose: this test also runs under -race in
+	// full-suite sweeps on loaded machines, where a round trip that takes
+	// ~2s unloaded can stretch several times that.
 	payload := bytes.Repeat([]byte("0123456789abcdef"), 128*1024)
-	resp, err := client.Call("echo", json.RawMessage(`"`+string(payload)+`"`), 10*time.Second)
+	resp, err := client.Call("echo", json.RawMessage(`"`+string(payload)+`"`), 30*time.Second)
 	if err != nil {
 		t.Fatalf("Call(2MB): %v", err)
 	}

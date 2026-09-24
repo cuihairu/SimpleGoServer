@@ -95,7 +95,8 @@ type ProtocolHandler struct {
 
 	// topicCache remembers the most recent publishes per topic so a
 	// resumed session can be caught up on what it missed while
-	// disconnected. Entries exist only while the topic has subscribers.
+	// disconnected. Entries exist while the topic has subscribers or any
+	// session — including a disconnected one — still records it.
 	topicCache map[string][]cachedPublish
 
 	// requireHello turns on strict handshake mode: a connection's first
@@ -125,11 +126,13 @@ type cachedPublish struct {
 
 // session is the server-side memory of one logical connection. It outlives
 // the transport: when a client reconnects and presents the token, its
-// topics are moved onto the new connection.
+// topics are moved onto the new connection. lastSeen is a Unix-nanosecond
+// counter so an inbound frame can refresh it under a read lock (see
+// touchSession).
 type session struct {
 	conn     net.Conn
 	topics   map[string]struct{}
-	lastSeen time.Time
+	lastSeen atomic.Int64
 }
 
 // sessionTTL bounds how long a disconnected session is kept for resuming.
@@ -172,7 +175,10 @@ func (p *ProtocolHandler) Close() {
 }
 
 // sessionJanitor periodically drops sessions that were never resumed within
-// the TTL, so tokens of clients that never came back do not accumulate.
+// the TTL, so tokens of clients that never came back do not accumulate. A
+// connected session never expires: every inbound frame refreshes lastSeen
+// (see touchSession), so only a client that stopped talking — disconnected
+// or silent past the TTL — ages out.
 func (p *ProtocolHandler) sessionJanitor() {
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
@@ -183,7 +189,7 @@ func (p *ProtocolHandler) sessionJanitor() {
 		case <-ticker.C:
 			p.mu.Lock()
 			for token, s := range p.sessions {
-				if time.Since(s.lastSeen) > p.sessionTTL {
+				if time.Since(time.Unix(0, s.lastSeen.Load())) > p.sessionTTL {
 					delete(p.sessions, token)
 					if s.conn != nil {
 						delete(p.connTokens, s.conn)
@@ -192,6 +198,22 @@ func (p *ProtocolHandler) sessionJanitor() {
 			}
 			p.mu.Unlock()
 		}
+	}
+}
+
+// touchSession refreshes the connection's session timestamp. Any inbound
+// frame — a heartbeat in particular — proves the client is alive, which is
+// what keeps a connected session out of the janitor's reach: without this,
+// a KeepAlive-only connection's session would expire while it is still
+// connected, and its later resume would silently start from scratch. The
+// read lock covers the two map lookups; the timestamp itself is atomic.
+func (p *ProtocolHandler) touchSession(conn net.Conn) {
+	p.mu.RLock()
+	token, ok := p.connTokens[conn]
+	s := p.sessions[token]
+	p.mu.RUnlock()
+	if ok && s != nil {
+		s.lastSeen.Store(time.Now().UnixNano())
 	}
 }
 
@@ -215,6 +237,9 @@ func (p *ProtocolHandler) HandleRead(ctx handler.InboundContext, message handler
 		ctx.Close(fmt.Errorf("proto: unexpected inbound message %T, want *Frame", message))
 		return
 	}
+	// any inbound frame proves the client is alive; refresh its session so
+	// the janitor only ever reaps clients that truly went quiet
+	p.touchSession(ctx.Conn())
 	// strict handshake mode: frames that need a negotiated session are
 	// refused before one exists. Reading the marker under the same map the
 	// handshake itself populates keeps the check exact — no flag that could
@@ -332,7 +357,7 @@ func (p *ProtocolHandler) attachSession(conn net.Conn, token string, cursors map
 	defer p.mu.Unlock()
 
 	if token != "" {
-		if s, ok := p.sessions[token]; ok && time.Since(s.lastSeen) <= p.sessionTTL {
+		if s, ok := p.sessions[token]; ok && time.Since(time.Unix(0, s.lastSeen.Load())) <= p.sessionTTL {
 			// move the recorded topics onto the new transport: the dead
 			// connection leaves every member set, conn takes its place
 			for topic := range s.topics {
@@ -346,7 +371,7 @@ func (p *ProtocolHandler) attachSession(conn net.Conn, token string, cursors map
 			}
 			delete(p.connTokens, s.conn)
 			s.conn = conn
-			s.lastSeen = time.Now()
+			s.lastSeen.Store(time.Now().UnixNano())
 			p.connTokens[conn] = token
 			return token, true, p.collectReplay(s, cursors)
 		}
@@ -354,7 +379,9 @@ func (p *ProtocolHandler) attachSession(conn net.Conn, token string, cursors map
 	}
 
 	token = newSessionToken()
-	p.sessions[token] = &session{conn: conn, topics: make(map[string]struct{}), lastSeen: time.Now()}
+	ns := &session{conn: conn, topics: make(map[string]struct{})}
+	ns.lastSeen.Store(time.Now().UnixNano())
+	p.sessions[token] = ns
 	p.connTokens[conn] = token
 	return token, false, nil
 }
@@ -480,7 +507,7 @@ func (p *ProtocolHandler) handleSubscribe(ctx handler.InboundContext, frame *Fra
 			} else {
 				delete(s.topics, topic)
 			}
-			s.lastSeen = time.Now()
+			s.lastSeen.Store(time.Now().UnixNano())
 		}
 	}
 	p.mu.Unlock()

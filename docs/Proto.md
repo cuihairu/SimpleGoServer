@@ -208,7 +208,8 @@ C2 <-- RESPONSE {"version":1,"token":"a1b2…","resumed":true} - S
   记账里删除，重连不会把一个已被判定为慢的订阅悄悄恢复。
 - **会话 TTL**：断开的会话保留 10 分钟（`resumed` 惰性检查 + 后台
   清扫），过期即作废，token 不再被认领；未知 token 不是错误，按新
-  会话处理。
+  会话处理。会话时间戳由**任何入站帧刷新**（心跳也在内）——活着的
+  连接无论挂多久都不会被回收，只有真正静默的会话才过期。
 - 客户端用法：断线前保存 `HandshakeResult.Token`，重连后调
   `client.HandshakeWith(token, timeout)`，`Resumed == true` 即恢复成功。
 

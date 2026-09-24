@@ -710,6 +710,74 @@ func TestClientResumeExpiredSessionIsFresh(t *testing.T) {
 	}
 }
 
+// TestActiveSessionOutlivesTTL pins what keeps a session alive: inbound
+// frames refresh its timestamp, so a connection that only ever heartbeats
+// (KeepAlive) stays resumable no matter how long it has been connected —
+// while a silent session still ages out at the TTL. Without the refresh,
+// the janitor would expire the session of a live connection and its later
+// resume would silently start from scratch, dropping the subscriptions.
+func TestActiveSessionOutlivesTTL(t *testing.T) {
+	addr, ph := startTCPServer(t, nil)
+	ph.mu.Lock()
+	ph.sessionTTL = 200 * time.Millisecond
+	ph.mu.Unlock()
+
+	// active group: keep pinging well past the TTL, then resume
+	c1, err := Dial(addr, nil)
+	if err != nil {
+		t.Fatalf("Dial(): %v", err)
+	}
+	res1, err := c1.Handshake(2 * time.Second)
+	if err != nil {
+		t.Fatalf("Handshake(): %v", err)
+	}
+	for i := 0; i < 8; i++ {
+		time.Sleep(50 * time.Millisecond)
+		if err := c1.Ping(2 * time.Second); err != nil {
+			t.Fatalf("Ping %d: %v", i, err)
+		}
+	}
+	_ = c1.Close()
+
+	c2, err := Dial(addr, nil)
+	if err != nil {
+		t.Fatalf("re-Dial(): %v", err)
+	}
+	defer c2.Close()
+	res2, err := c2.HandshakeWith(res1.Token, nil, 2*time.Second)
+	if err != nil {
+		t.Fatalf("resume Handshake(): %v", err)
+	}
+	if !res2.Resumed {
+		t.Fatal("a heartbeat-alive session was expired by the server")
+	}
+
+	// silent group: same TTL passes with no traffic, resume must fail
+	c3, err := Dial(addr, nil)
+	if err != nil {
+		t.Fatalf("Dial(): %v", err)
+	}
+	res3, err := c3.Handshake(2 * time.Second)
+	if err != nil {
+		t.Fatalf("Handshake(): %v", err)
+	}
+	_ = c3.Close()
+	time.Sleep(300 * time.Millisecond)
+
+	c4, err := Dial(addr, nil)
+	if err != nil {
+		t.Fatalf("re-Dial(): %v", err)
+	}
+	defer c4.Close()
+	res4, err := c4.HandshakeWith(res3.Token, nil, 2*time.Second)
+	if err != nil {
+		t.Fatalf("resume Handshake(): %v", err)
+	}
+	if res4.Resumed {
+		t.Fatal("a silent session outlived the TTL")
+	}
+}
+
 // TestDroppedSubscriberRevivesOnResume verifies the accounting behind
 // resume: a write failure drops the transport from the subscription table
 // (TCP semantics force repeated publishes until the server notices), but
