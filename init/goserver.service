@@ -1,14 +1,11 @@
 [Unit]
-Description=Simple Go Server
+Description=SimpleGoServer TCP service
 After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/simplegoserver
+ExecStart=/usr/local/bin/simplegoserver --host 0.0.0.0 --port 8080 --config /etc/simplegoserver/config.yml
 Restart=on-failure
-Environment=PORT=8080
-Environment=CONTROL_PORT=8081
-Environment=CONFIG_PATH=/etc/simplegoserver/config.json
 
 [Install]
 WantedBy=multi-user.target

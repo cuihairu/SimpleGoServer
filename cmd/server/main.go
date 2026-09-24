@@ -70,8 +70,13 @@ func runServer() {
 
 var rootCmd = &cobra.Command{
 	Use:   "server",
-	Short: "A brief description of your application",
-	Long:  `A longer description that spans multiple lines and likely contains`,
+	Short: "SimpleGoServer: reactor-based TCP server with echo, pub/sub and streaming",
+	Long: `SimpleGoServer serves the custom frame protocol (10-byte header + JSON
+payload) over TCP: request/response, publish/subscribe and streamed large
+payloads, with heartbeat reaping, graceful shutdown and pluggable balancers.
+
+Configuration comes from --config (YAML, see config.example.yml); any key
+can be overridden by the matching command-line flag.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		runServer()
 	},
