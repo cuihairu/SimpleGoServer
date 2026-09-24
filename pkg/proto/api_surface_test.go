@@ -220,12 +220,6 @@ func TestFrameStringers(t *testing.T) {
 	}
 }
 
-func TestQuoteEscapes(t *testing.T) {
-	if got := quote(`a"b\c`); got != `"a\"b\\c"` {
-		t.Fatalf("quote() = %s, want escaped JSON string", got)
-	}
-}
-
 // captureOutbound records whatever the codec hands towards the head.
 // Only HandleWrite is ever called on it, so the embedded nil interface
 // never panics.

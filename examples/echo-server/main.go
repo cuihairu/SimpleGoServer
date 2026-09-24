@@ -18,7 +18,6 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"log"
 	"os"
 	"os/signal"
 	"syscall"
@@ -28,6 +27,10 @@ import (
 	"github.com/cuihairu/simplegoserver/pkg/proto"
 	"github.com/cuihairu/simplegoserver/pkg/reactor"
 )
+
+// osExit is a variable so tests can observe the failure exit without
+// terminating the test binary.
+var osExit = os.Exit
 
 // handleDemo is the entire business logic of the server. It receives the
 // action name and the raw JSON payload of a request and returns the value to
@@ -45,12 +48,30 @@ func handleDemo(action string, data []byte) (any, error) {
 	}
 }
 
+// Flags are registered exactly once per process (init), so main stays a
+// thin, repeatable shell that tests can drive more than once.
+var (
+	addr           = flag.String("addr", "127.0.0.1:8080", "listen address")
+	broadcastEvery = flag.Duration("broadcast", 2*time.Second, "interval of the ticks topic broadcast (0 disables)")
+	idle           = flag.Duration("idle", 60*time.Second, "close connections silent for this long (0 disables)")
+)
+
 func main() {
-	addr := flag.String("addr", "127.0.0.1:8080", "listen address")
-	broadcastEvery := flag.Duration("broadcast", 2*time.Second, "interval of the ticks topic broadcast (0 disables)")
-	idle := flag.Duration("idle", 60*time.Second, "close connections silent for this long (0 disables)")
 	flag.Parse()
 
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	if err := runServer(*addr, *broadcastEvery, *idle, sigCh); err != nil {
+		fmt.Fprintf(os.Stderr, "start server: %v\n", err)
+		osExit(1)
+	}
+}
+
+// runServer wires the protocol and pipeline, serves until a value arrives on
+// sigCh (a SIGINT/SIGTERM in production), then shuts down gracefully. It is
+// split out of main so tests can drive the whole lifecycle with a synthetic
+// signal channel and an ephemeral port.
+func runServer(addr string, broadcastEvery, idle time.Duration, sigCh <-chan os.Signal) error {
 	// One shared protocol handler for every connection: it is safe for
 	// concurrent use (the subscription table is internally locked), and
 	// sharing it is what lets the broadcast goroutine below reach all
@@ -65,55 +86,58 @@ func main() {
 	}
 
 	options := &reactor.ServerOptions{
-		Listener: "tcp://" + *addr,
+		Listener: "tcp://" + addr,
 		// reap connections that stay silent for this long; any received
 		// frame — heartbeat or business traffic — resets the timer, so
 		// keepalive clients (see concurrent-client) survive it while a
 		// dead peer is cleaned up instead of leaking a socket
-		IdleTimeout: *idle,
+		IdleTimeout: idle,
 	}
 	server, err := reactor.NewReactor(options, nil, nil, initializer, nil)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "start server: %v\n", err)
-		os.Exit(1)
+		return err
 	}
 
 	go func() {
 		server.Run()
 	}()
 
-	if *broadcastEvery > 0 {
-		go broadcastLoop(protocol, *broadcastEvery)
+	stopBroadcast := make(chan struct{})
+	if broadcastEvery > 0 {
+		go broadcastLoop(protocol, broadcastEvery, stopBroadcast)
 	}
 
-	fmt.Printf("echo-server listening on %s (ctrl-c to shut down)\n", *addr)
+	fmt.Printf("echo-server listening on %s (ctrl-c to shut down)\n", addr)
 
-	// SIGINT/SIGTERM trigger the staged shutdown: stop accepting, let live
-	// connections drain, force-close the rest, stop the worker loops.
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	<-sigCh
 
 	fmt.Println("shutting down…")
+	close(stopBroadcast)
 	server.ShutdownGracefully()
 	fmt.Println("bye")
+	return nil
 }
 
 // broadcastLoop publishes a tick to every subscriber of the "ticks" topic —
-// the server pushing without being asked, the second protocol mode.
-func broadcastLoop(protocol *proto.ProtocolHandler, every time.Duration) {
+// the server pushing without being asked, the second protocol mode — until
+// stop is closed.
+func broadcastLoop(protocol *proto.ProtocolHandler, every time.Duration, stop <-chan struct{}) {
 	ticker := time.NewTicker(every)
 	defer ticker.Stop()
-	for now := range ticker.C {
-		delivered, err := protocol.Publish("ticks", map[string]any{
-			"now":  now.Format(time.RFC3339),
-			"note": "server push",
-		})
-		if err != nil {
-			log.Printf("broadcast: %v", err)
-		}
-		if delivered > 0 {
-			fmt.Printf("tick delivered to %d subscriber(s)\n", delivered)
+	for {
+		select {
+		case now := <-ticker.C:
+			// the payload is our own fixed map of strings, so Publish cannot
+			// fail to encode it and there is deliberately no error path
+			delivered, _ := protocol.Publish("ticks", map[string]any{
+				"now":  now.Format(time.RFC3339),
+				"note": "server push",
+			})
+			if delivered > 0 {
+				fmt.Printf("tick delivered to %d subscriber(s)\n", delivered)
+			}
+		case <-stop:
+			return
 		}
 	}
 }

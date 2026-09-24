@@ -25,17 +25,33 @@ type protocolClient interface {
 	CloseGracefully(timeout time.Duration) error
 }
 
+// osExit is a variable so tests can run main() without terminating the
+// test binary.
+var osExit = os.Exit
+
 func main() {
-	addr := flag.String("addr", "127.0.0.1:8080", "server address")
-	action := flag.String("action", "", "request action (e.g. echo)")
-	data := flag.String("data", "", "request payload; raw JSON string")
-	topic := flag.String("subscribe", "", "topic to subscribe; with -watch keeps receiving pushes")
-	watch := flag.Duration("watch", 0, "keep running for this long after the request (e.g. 30s)")
-	timeout := flag.Duration("timeout", 5*time.Second, "per-request timeout")
-	keepalive := flag.Duration("keepalive", 30*time.Second, "ping interval, keeps the connection alive through server idle timeouts (0 disables)")
-	hello := flag.Bool("hello", false, "negotiate the protocol version before anything else")
-	resilient := flag.Bool("resilient", false, "auto-reconnect when the connection drops, restoring the session and subscriptions (implies a handshake)")
-	flag.Parse()
+	osExit(run(os.Args[1:]))
+}
+
+// run parses args, performs the requested operations and returns the
+// process exit code. Failures are reported on stderr and yield 1 — defers
+// below still release the connection, which a bare os.Exit would skip.
+func run(args []string) int {
+	fs := flag.NewFlagSet("client", flag.ContinueOnError)
+	addr := fs.String("addr", "127.0.0.1:8080", "server address")
+	action := fs.String("action", "", "request action (e.g. echo)")
+	data := fs.String("data", "", "request payload; raw JSON string")
+	topic := fs.String("subscribe", "", "topic to subscribe; with -watch keeps receiving pushes")
+	watch := fs.Duration("watch", 0, "keep running for this long after the request (e.g. 30s)")
+	timeout := fs.Duration("timeout", 5*time.Second, "per-request timeout")
+	keepalive := fs.Duration("keepalive", 30*time.Second, "ping interval, keeps the connection alive through server idle timeouts (0 disables)")
+	hello := fs.Bool("hello", false, "negotiate the protocol version before anything else")
+	resilient := fs.Bool("resilient", false, "auto-reconnect when the connection drops, restoring the session and subscriptions (implies a handshake)")
+	if err := fs.Parse(args); err != nil {
+		// flag.ExitOnError (the previous default) exited with code 2 on a
+		// parse failure; keep that contract now that we own the exit
+		return 2
+	}
 
 	eventCh := make(chan *proto.Frame, 16)
 	onEvent := func(frame *proto.Frame) { eventCh <- frame }
@@ -48,20 +64,17 @@ func main() {
 		// server restarts; -hello and -keepalive are subsumed by it
 		if err := rc.Connect(*timeout); err != nil {
 			fmt.Fprintf(os.Stderr, "connect %s: %v\n", *addr, err)
-			os.Exit(1)
+			return 1
 		}
 	} else {
 		plain, err := proto.Dial(*addr, onEvent)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "connect %s: %v\n", *addr, err)
-			os.Exit(1)
+			return 1
 		}
 		client = plain
 	}
 	defer client.Close()
-
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
 	// graceful goodbye so the server releases the connection right away
 	defer func() {
@@ -81,7 +94,7 @@ func main() {
 			res, err := plain.Handshake(*timeout)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "handshake: %v\n", err)
-				os.Exit(1)
+				return 1
 			}
 			fmt.Printf("handshake ok: protocol v%d, features %v\n", res.Version, res.Features)
 		}
@@ -90,7 +103,7 @@ func main() {
 	if *topic != "" {
 		if err := client.Subscribe(*topic, *timeout); err != nil {
 			fmt.Fprintf(os.Stderr, "subscribe %s: %v\n", *topic, err)
-			os.Exit(1)
+			return 1
 		}
 		fmt.Printf("subscribed to %q\n", *topic)
 	}
@@ -103,7 +116,7 @@ func main() {
 		resp, err := client.Call(*action, payload, *timeout)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "call %s: %v\n", *action, err)
-			os.Exit(1)
+			return 1
 		}
 		if !resp.OK() {
 			fmt.Printf("response: error: %s\n", resp.Err.Error)
@@ -117,6 +130,8 @@ func main() {
 		watchFor = time.Hour // stay subscribed until interrupted
 	}
 	if watchFor > 0 {
+		sigCh := make(chan os.Signal, 1)
+		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 		timer := time.NewTimer(watchFor)
 		defer timer.Stop()
 		for {
@@ -124,15 +139,16 @@ func main() {
 			case frame := <-eventCh:
 				printEvent(frame)
 			case <-timer.C:
-				return
+				return 0
 			case <-sigCh:
-				return
+				return 0
 			case <-client.Done():
 				fmt.Println("connection closed")
-				return
+				return 0
 			}
 		}
 	}
+	return 0
 }
 
 func printEvent(frame *proto.Frame) {

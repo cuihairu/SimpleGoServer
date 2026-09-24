@@ -24,29 +24,49 @@ import (
 	"github.com/cuihairu/simplegoserver/pkg/proto"
 )
 
+// Flags are registered exactly once per process (init), so main stays a
+// thin, repeatable shell that tests can drive more than once.
+var (
+	addr      = flag.String("addr", "127.0.0.1:8080", "server address")
+	clients   = flag.Int("clients", 8, "number of concurrent connections")
+	requests  = flag.Int("requests", 20, "requests per connection")
+	timeout   = flag.Duration("timeout", 5*time.Second, "per-request timeout")
+	subscribe = flag.Duration("subscribe", 3*time.Second, "how long to listen to the ticks topic (0 disables)")
+)
+
 func main() {
-	addr := flag.String("addr", "127.0.0.1:8080", "server address")
-	clients := flag.Int("clients", 8, "number of concurrent connections")
-	requests := flag.Int("requests", 20, "requests per connection")
-	timeout := flag.Duration("timeout", 5*time.Second, "per-request timeout")
-	subscribe := flag.Duration("subscribe", 3*time.Second, "how long to listen to the ticks topic (0 disables)")
 	flag.Parse()
 
-	var wg sync.WaitGroup
-	results := make(chan result, *clients)
+	summarize(runAll(*addr, *clients, *requests, *timeout, *subscribe))
+}
 
-	for i := 0; i < *clients; i++ {
+// runAll drives numClients concurrent connections and collects one result
+// per client.
+func runAll(addr string, numClients, requests int, timeout, subscribeFor time.Duration) []result {
+	var wg sync.WaitGroup
+	results := make(chan result, numClients)
+
+	for i := 0; i < numClients; i++ {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
-			results <- runClient(*addr, id, *requests, *timeout, *subscribe)
+			results <- runClient(addr, id, requests, timeout, subscribeFor)
 		}(i)
 	}
 	wg.Wait()
 	close(results)
 
-	total, ok, latency := 0, 0, time.Duration(0)
+	out := make([]result, 0, numClients)
 	for r := range results {
+		out = append(out, r)
+	}
+	return out
+}
+
+// summarize prints the per-client failures and the aggregate scoreboard.
+func summarize(results []result) {
+	total, ok, latency := 0, 0, time.Duration(0)
+	for _, r := range results {
 		total += r.requests
 		ok += r.ok
 		latency += r.latency

@@ -177,3 +177,104 @@ func TestNodeContextAttachment(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// TestPipelineIndexLookupMisses covers the not-found tails of IndexOf and
+// LastIndexOf: a predicate nothing matches must fall off the scan and
+// report -1 from both directions.
+func TestPipelineIndexLookupMisses(t *testing.T) {
+	p := newTestPipeline(t)
+	p.AddLast(&readRecorder{}, &writeRecorder{})
+
+	if got := p.IndexOf(func(h handler.Handler) bool { return false }); got != -1 {
+		t.Fatalf("IndexOf miss = %d, want -1", got)
+	}
+	if got := p.LastIndexOf(func(h handler.Handler) bool { return false }); got != -1 {
+		t.Fatalf("LastIndexOf miss = %d, want -1", got)
+	}
+}
+
+// TestPipelineContextAtDefensiveBounds drives the mid-scan guard with a
+// pipeline whose size disagrees with its chain — a state reachable only
+// through misuse, but the guard exists precisely for it.
+func TestPipelineContextAtDefensiveBounds(t *testing.T) {
+	p := NewPipeline(nil) // sentinels only, no handlers between them
+	p.size = 5            // lie about the chain length
+	if got := p.ContextAt(3); got != nil {
+		t.Fatalf("ContextAt past the real chain = %v, want nil", got)
+	}
+}
+
+// TestPipelineAddPanicsOnInvalidInput pins the panic contracts: nil
+// handlers and out-of-range positions must panic rather than corrupt the
+// chain.
+func TestPipelineAddPanicsOnInvalidInput(t *testing.T) {
+	p := newTestPipeline(t)
+
+	mustPanic := func(name string, f func()) {
+		t.Helper()
+		defer func() {
+			if recover() == nil {
+				t.Fatalf("%s did not panic", name)
+			}
+		}()
+		f()
+	}
+	mustPanic("AddFirst(nil)", func() { p.AddFirst(nil) })
+	mustPanic("AddLast(nil)", func() { p.AddLast(nil) })
+	mustPanic("AddHandler(nil)", func() { p.AddHandler(0, nil) })
+	mustPanic("AddHandler(-1)", func() { p.AddHandler(-1, &readRecorder{}) })
+	mustPanic("AddHandler(past end)", func() { p.AddHandler(p.Size()+1, &readRecorder{}) })
+}
+
+// TestWithDefaultPipeline covers the package's default initializer: a nil
+// pipeline is rejected, a real one gains the error handler as its last
+// handler.
+func TestWithDefaultPipeline(t *testing.T) {
+	if err := WithDefaultPipeline(nil); err == nil {
+		t.Fatal("WithDefaultPipeline(nil) must fail")
+	}
+	p := newTestPipeline(t)
+	if err := WithDefaultPipeline(p); err != nil {
+		t.Fatalf("WithDefaultPipeline(): %v", err)
+	}
+	last := p.ContextAt(p.Size() - 2) // tail sentinel sits at Size()-1
+	if _, ok := last.Handler().(*ErrorHandler); !ok {
+		t.Fatalf("last handler = %T, want *ErrorHandler", last.Handler())
+	}
+}
+
+// TestNewErrorHandlerSingleton pins the lazy singleton: repeated calls
+// return the same instance.
+func TestNewErrorHandlerSingleton(t *testing.T) {
+	if NewErrorHandler() != NewErrorHandler() {
+		t.Fatal("NewErrorHandler() must return the same instance")
+	}
+}
+
+// panickingWriter blows up inside HandleWrite so NodeContext.Write's
+// recover path fires and forwards the panic down the pipeline as an
+// exception.
+type panickingWriter struct{}
+
+func (panickingWriter) HandleWrite(handler.OutboundContext, handler.Message) {
+	panic("boom from outbound")
+}
+
+// TestNodeContextWriteRecoversHandlerPanic: a panic inside an outbound
+// handler must not escape Write — it becomes a pipeline exception picked
+// up by the first inbound handler.
+func TestNodeContextWriteRecoversHandlerPanic(t *testing.T) {
+	p := newTestPipeline(t)
+	var events []string
+	guard := &exceptionRecorder{name: "guard", events: &events}
+	p.AddLast(guard)                   // [head, guard, tail]
+	p.AddHandler(1, panickingWriter{}) // [head, guard, panicW, tail]
+	p.AddHandler(2, &readRecorder{})   // [head, guard, panicW, reader, tail]
+
+	reader := p.ContextAt(3)
+	reader.Write("hello")
+
+	if len(events) != 1 || events[0] != "guard" {
+		t.Fatalf("exception events = %v, want [guard] — the panic must reach the first inbound handler", events)
+	}
+}

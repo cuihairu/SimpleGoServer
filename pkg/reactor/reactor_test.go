@@ -188,10 +188,7 @@ func TestReactorKeepsActiveConnectionsAlive(t *testing.T) {
 // blind channel send would park it in a buffer nobody drains, leaking the
 // fd for the rest of the process lifetime.
 func TestWorkerAddConnAfterStopRejectsConnection(t *testing.T) {
-	worker, err := NewWorker(context.Background(), "worker:test", handlerImpl.NewErrorHandler(), echoInitializer, false, 0, NewConnectionRegistry(), &WorkerGroup{})
-	if err != nil {
-		t.Fatalf("NewWorker(): %v", err)
-	}
+	worker := NewWorker(context.Background(), "worker:test", handlerImpl.NewErrorHandler(), echoInitializer, false, 0, NewConnectionRegistry(), &WorkerGroup{})
 	go worker.Run()
 	worker.Stop()
 

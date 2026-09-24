@@ -127,3 +127,28 @@ func TestGracefulReloadMethod(t *testing.T) {
 	}
 	graceful.Stop()
 }
+
+// TestGracefulListenGuards covers listen()'s two configuration branches:
+// an empty shutdown-signal list is a programming error and must panic,
+// and an empty reload list simply skips the second Notify.
+func TestGracefulListenGuards(t *testing.T) {
+	broken := &Graceful{}
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Fatal("listen() without shutdown signals must panic")
+			}
+		}()
+		broken.listen()
+	}()
+
+	reloadOnly := &Graceful{
+		shutdownCh:      make(chan os.Signal, 1),
+		reloadCh:        make(chan os.Signal, 1),
+		doneCh:          make(chan bool, 1),
+		shutdownSignals: []os.Signal{syscall.SIGTERM},
+		reloadSignals:   nil,
+	}
+	reloadOnly.listen() // must not panic
+	reloadOnly.Stop()
+}

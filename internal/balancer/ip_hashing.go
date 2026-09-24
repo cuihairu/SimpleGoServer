@@ -40,10 +40,7 @@ func (I *IPHashingBalancer[T]) Next(key string) (T, error) {
 	if len(I.circle) == 0 {
 		return backend, errors.New("no replicas")
 	}
-	hash, err := hashKey(key)
-	if err != nil {
-		return backend, err
-	}
+	hash := hashKey(key)
 	index := sort.Search(len(I.sortedHashList), func(i int) bool {
 		return I.sortedHashList[i] >= hash
 	})
@@ -53,13 +50,12 @@ func (I *IPHashingBalancer[T]) Next(key string) (T, error) {
 	return I.circle[I.sortedHashList[index]], nil
 }
 
-func hashKey(key string) (uint32, error) {
+// hashKey is fnv-1a over the key. fnv's Write is a pure computation that
+// never fails, so there is deliberately no error to propagate.
+func hashKey(key string) uint32 {
 	hasher := fnv.New32a()
-	_, err := hasher.Write([]byte(key))
-	if err != nil {
-		return 0, err
-	}
-	return hasher.Sum32(), nil
+	hasher.Write([]byte(key))
+	return hasher.Sum32()
 }
 
 func (I *IPHashingBalancer[T]) Register(backend T) error {
@@ -70,10 +66,7 @@ func (I *IPHashingBalancer[T]) Register(backend T) error {
 	}
 	for i := 0; i < I.replicas; i++ {
 		replicaKey := backend.Id() + strconv.Itoa(i)
-		hash, err := hashKey(replicaKey)
-		if err != nil {
-			return err
-		}
+		hash := hashKey(replicaKey)
 		I.circle[hash] = backend
 		I.sortedHashList = append(I.sortedHashList, hash)
 	}
@@ -95,10 +88,7 @@ func (I *IPHashingBalancer[T]) Unregister(backend T) error {
 	}
 	for i := 0; i < I.replicas; i++ {
 		replicaKey := backend.Id() + strconv.Itoa(i)
-		hash, err := hashKey(replicaKey)
-		if err != nil {
-			return err
-		}
+		hash := hashKey(replicaKey)
 		delete(I.circle, hash)
 		index := sort.Search(len(I.sortedHashList), func(i int) bool {
 			return I.sortedHashList[i] >= hash

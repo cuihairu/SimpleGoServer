@@ -24,10 +24,9 @@ func EncodeJSON(t FrameType, streamId uint32, action string, data any) (*Frame, 
 		}
 		raw = encoded
 	}
-	payload, err := json.Marshal(&JSONMessage{Action: action, Data: raw})
-	if err != nil {
-		return nil, err
-	}
+	// the envelope holds our own string-plus-raw-JSON types, so this
+	// marshal cannot fail and there is deliberately no error path
+	payload, _ := json.Marshal(&JSONMessage{Action: action, Data: raw})
 	return &Frame{
 		Header: FrameHeader{
 			FrameType: t,

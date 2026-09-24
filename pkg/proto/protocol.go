@@ -196,8 +196,12 @@ func (p *ProtocolHandler) Close() {
 // connected session never expires: every inbound frame refreshes lastSeen
 // (see touchSession), so only a client that stopped talking — disconnected
 // or silent past the TTL — ages out.
+// janitorTickInterval is how often the session janitor sweeps. A variable
+// (not a constant) so tests can shrink it instead of waiting a minute.
+var janitorTickInterval = time.Minute
+
 func (p *ProtocolHandler) sessionJanitor() {
-	ticker := time.NewTicker(time.Minute)
+	ticker := time.NewTicker(janitorTickInterval)
 	defer ticker.Stop()
 	for {
 		select {
@@ -240,10 +244,13 @@ func (p *ProtocolHandler) touchSession(conn net.Conn) {
 	}
 }
 
+// readRandom is swappable so tests can exercise the entropy-failure path.
+var readRandom = rand.Read
+
 // newSessionToken returns a random, unguessable session token.
 func newSessionToken() string {
 	b := make([]byte, 16)
-	if _, err := rand.Read(b); err != nil {
+	if _, err := readRandom(b); err != nil {
 		// crypto/rand failing means the system entropy source is broken;
 		// an unpredictable token is a hardening feature, not a necessity
 		return fmt.Sprintf("s-%x", time.Now().UnixNano())
@@ -513,29 +520,21 @@ func (p *ProtocolHandler) handleRequestFrame(ctx handler.InboundContext, frame *
 	// responses carry the JSONMessage envelope too, so the client can read
 	// action name and body uniformly whether the call succeeded or failed
 	if err != nil {
-		errBody, merr := json.Marshal(&ErrorMessage{Error: err.Error()})
-		if merr != nil {
-			ctx.Close(fmt.Errorf("proto: marshal error response: %w", merr))
-			return
-		}
-		payload, merr := json.Marshal(&JSONMessage{Action: msg.Action, Data: errBody})
-		if merr != nil {
-			ctx.Close(fmt.Errorf("proto: marshal error envelope: %w", merr))
-			return
-		}
+		// the envelope marshals our own string-plus-raw-JSON types, which
+		// json.Marshal cannot fail on — there is deliberately no error path
+		errBody, _ := json.Marshal(&ErrorMessage{Error: err.Error()})
+		payload, _ := json.Marshal(&JSONMessage{Action: msg.Action, Data: errBody})
 		ctx.Write(newFrame(RESPONSE, streamId, payload))
 		return
 	}
 	body, err := json.Marshal(resp)
 	if err != nil {
+		// resp comes from the user-supplied handler and can be anything, so
+		// this marshal is the one that can genuinely fail
 		ctx.Close(fmt.Errorf("proto: marshal response: %w", err))
 		return
 	}
-	payload, err := json.Marshal(&JSONMessage{Action: msg.Action, Data: body})
-	if err != nil {
-		ctx.Close(fmt.Errorf("proto: marshal response envelope: %w", err))
-		return
-	}
+	payload, _ := json.Marshal(&JSONMessage{Action: msg.Action, Data: body})
 	ctx.Write(newFrame(RESPONSE, streamId, payload))
 }
 
@@ -645,19 +644,11 @@ func (p *ProtocolHandler) Publish(topic string, payload any) (int, error) {
 }
 
 // mustJSON packs a topic and pre-encoded body into a JSONMessage payload.
+// The envelope holds our own string-plus-raw-JSON types, so the marshal
+// cannot fail and there is deliberately no error path.
 func mustJSON(topic string, body []byte) []byte {
-	payload, err := json.Marshal(&JSONMessage{Action: topic, Data: body})
-	if err != nil {
-		// body is already encoded JSON, so marshalling the envelope cannot
-		// fail in practice; fall back to the topic alone
-		return []byte(`{"action":` + quote(topic) + `}`)
-	}
+	payload, _ := json.Marshal(&JSONMessage{Action: topic, Data: body})
 	return payload
-}
-
-func quote(s string) string {
-	b, _ := json.Marshal(s)
-	return string(b)
 }
 
 func (p *ProtocolHandler) removeSubscriber(topic string, conn net.Conn) {
@@ -685,11 +676,10 @@ func (p *ProtocolHandler) Subscribers(topic string) int {
 }
 
 func (p *ProtocolHandler) reply(ctx handler.InboundContext, t FrameType, streamId uint32, action string, data any) {
-	frame, err := EncodeJSON(t, streamId, action, data)
-	if err != nil {
-		ctx.Close(fmt.Errorf("proto: encode %s: %w", t, err))
-		return
-	}
+	// every call site passes our own plain-JSON types (nil, strings,
+	// *HelloResponse), so EncodeJSON cannot fail and there is deliberately
+	// no error path
+	frame, _ := EncodeJSON(t, streamId, action, data)
 	ctx.Write(frame)
 }
 

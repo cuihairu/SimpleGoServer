@@ -90,7 +90,13 @@ func initConfig() {
 	}
 }
 
-func main() {
+// osExit is a variable so tests can run main() without terminating the
+// test binary.
+var osExit = os.Exit
+
+// Flags are registered and bound exactly once per process (init), so main
+// stays a thin, repeatable shell that tests can drive more than once.
+func init() {
 	cobra.OnInitialize(initConfig)
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "./config.yml", "config file")
 	rootCmd.PersistentFlags().StringVar(&host, "host", "localhost", "server host")
@@ -101,51 +107,27 @@ func main() {
 	rootCmd.PersistentFlags().BoolVar(&lockThread, "lockThread", true, "lock thread")
 	rootCmd.PersistentFlags().DurationVar(&idleTime, "idleTimeout", 0, "close connections silent for this long (e.g. 90s; 0 disables)")
 	rootCmd.PersistentFlags().BoolVar(&strictHello, "strictHello", false, "require HELLO as the first frame on every connection")
+	bindFlags()
+}
 
-	// bind
-	err := viper.BindPFlag("server.host", rootCmd.PersistentFlags().Lookup("host"))
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "bind config error: %s\n", err)
-		return
-	}
-	err = viper.BindPFlag("server.port", rootCmd.PersistentFlags().Lookup("port"))
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "bind config error: %s\n", err)
-		return
-	}
-	err = viper.BindPFlag("server.network", rootCmd.PersistentFlags().Lookup("network"))
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "bind config error: %s\n", err)
-		return
-	}
-	err = viper.BindPFlag("server.multicore", rootCmd.PersistentFlags().Lookup("multicore"))
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "bind config error: %s\n", err)
-		return
-	}
-	err = viper.BindPFlag("server.numWorkers", rootCmd.PersistentFlags().Lookup("workers"))
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "bind config error: %s\n", err)
-		return
-	}
-	err = viper.BindPFlag("server.lockThread", rootCmd.PersistentFlags().Lookup("lockThread"))
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "bind config error: %s\n", err)
-		return
-	}
-	err = viper.BindPFlag("server.idleTimeout", rootCmd.PersistentFlags().Lookup("idleTimeout"))
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "bind config error: %s\n", err)
-		return
-	}
-	err = viper.BindPFlag("server.strictHello", rootCmd.PersistentFlags().Lookup("strictHello"))
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "bind config error: %s\n", err)
-		return
-	}
+// bindFlags wires the registered flags into viper. Every flag is registered
+// a few lines above (or in init, before this ever runs), so the lookup can
+// never hand viper a nil flag and BindPFlag cannot fail — there is
+// deliberately no error path.
+func bindFlags() {
+	_ = viper.BindPFlag("server.host", rootCmd.PersistentFlags().Lookup("host"))
+	_ = viper.BindPFlag("server.port", rootCmd.PersistentFlags().Lookup("port"))
+	_ = viper.BindPFlag("server.network", rootCmd.PersistentFlags().Lookup("network"))
+	_ = viper.BindPFlag("server.multicore", rootCmd.PersistentFlags().Lookup("multicore"))
+	_ = viper.BindPFlag("server.numWorkers", rootCmd.PersistentFlags().Lookup("workers"))
+	_ = viper.BindPFlag("server.lockThread", rootCmd.PersistentFlags().Lookup("lockThread"))
+	_ = viper.BindPFlag("server.idleTimeout", rootCmd.PersistentFlags().Lookup("idleTimeout"))
+	_ = viper.BindPFlag("server.strictHello", rootCmd.PersistentFlags().Lookup("strictHello"))
+}
 
+func main() {
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Println(err)
-		os.Exit(1)
+		osExit(1)
 	}
 }

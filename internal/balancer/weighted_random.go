@@ -33,12 +33,12 @@ func (w *WeightedRandomBalancer[T]) Next(key string) (T, error) {
 		return w.backends[0], nil
 	}
 	r := rand.Intn(w.preSum[size])
+	// Search always lands in [1, size]: preSum[size] > r rules out a miss
+	// (so index <= size) and preSum[0] == 0 > r would need r < 0 (so
+	// index >= 1) — index-1 is always a valid backend slot
 	index := sort.Search(len(w.preSum), func(i int) bool {
 		return w.preSum[i] > r
 	})
-	if index > size || index < 0 {
-		index = 1
-	}
 	return w.backends[index-1], nil
 }
 

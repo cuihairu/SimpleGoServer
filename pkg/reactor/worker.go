@@ -70,12 +70,8 @@ func NewWorkerGroup(opts pkg.Options, ctx context.Context, eventListener event.L
 	group := &WorkerGroup{eventListener: eventListener, registry: registry}
 
 	for i := 0; i < serverOptions.NumWorkers; i++ {
-		worker, err := NewWorker(ctx, fmt.Sprintf("worker:%d", i), eventListener, pipelineInitializer, serverOptions.GetLockThread(), serverOptions.GetIdleTimeout(), registry, group)
-		if err != nil {
-			eventListener.OnError(err)
-			return nil, err
-		}
-		err = balancer.Register(worker)
+		worker := NewWorker(ctx, fmt.Sprintf("worker:%d", i), eventListener, pipelineInitializer, serverOptions.GetLockThread(), serverOptions.GetIdleTimeout(), registry, group)
+		err := balancer.Register(worker)
 		if err != nil {
 			eventListener.OnError(err)
 			return nil, err
@@ -145,7 +141,10 @@ func (g *WorkerGroup) AwaitDone(timeout time.Duration) bool {
 	return g.active.Load() == 0
 }
 
-func NewWorker(parent context.Context, id string, eventListener event.Listener, pipelineInitializer handler.PipelineInitializer, lockThread bool, idleTimeout time.Duration, registry *ConnectionRegistry, group *WorkerGroup) (*Worker, error) {
+// NewWorker builds a worker. Construction cannot fail — every fallible
+// step happens later on the loop — so there is deliberately no error to
+// propagate.
+func NewWorker(parent context.Context, id string, eventListener event.Listener, pipelineInitializer handler.PipelineInitializer, lockThread bool, idleTimeout time.Duration, registry *ConnectionRegistry, group *WorkerGroup) *Worker {
 	ctx, cancel := context.WithCancel(parent)
 	return &Worker{
 		ctx:                 ctx,
@@ -158,7 +157,7 @@ func NewWorker(parent context.Context, id string, eventListener event.Listener, 
 		eventListener:       eventListener,
 		registry:            registry,
 		group:               group,
-	}, nil
+	}
 }
 
 // AddConn queues a connection for the worker loop. A full queue blocks the
