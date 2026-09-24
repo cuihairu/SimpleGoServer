@@ -70,7 +70,7 @@ func startHangingServer(t *testing.T) string {
 
 func TestRunAllAndSummarize(t *testing.T) {
 	addr, _ := startServer(t, echoHandler)
-	results := runAll(addr, 3, 2, 2*time.Second, 0)
+	results := runAll(addr, 3, 2, 2*time.Second, 0, 0)
 	if len(results) != 3 {
 		t.Fatalf("runAll returned %d results, want 3", len(results))
 	}
@@ -96,7 +96,7 @@ func TestMainDrivesTheWholeFlow(t *testing.T) {
 	defer func() { os.Args = oldArgs }()
 	os.Args = []string{
 		"concurrent-client", "-addr", addr,
-		"-clients", "2", "-requests", "1", "-timeout", "2s", "-subscribe", "100ms",
+		"-clients", "2", "-requests", "1", "-timeout", "2s", "-subscribe", "100ms", "-payload", "65536",
 	}
 	main()
 }
@@ -104,7 +104,7 @@ func TestMainDrivesTheWholeFlow(t *testing.T) {
 func TestRunClientSubscribeFailsOnStrictServer(t *testing.T) {
 	addr, protocol := startServer(t, echoHandler)
 	protocol.RequireHello(true) // subscribing before HELLO gets the conn closed
-	res := runClient(addr, 0, 1, 2*time.Second, 200*time.Millisecond)
+	res := runClient(addr, 0, 1, 2*time.Second, 200*time.Millisecond, 0)
 	if res.err == nil || !strings.Contains(res.err.Error(), "subscribe:") {
 		t.Fatalf("a strict server must fail the subscribe: %v", res.err)
 	}
@@ -112,7 +112,7 @@ func TestRunClientSubscribeFailsOnStrictServer(t *testing.T) {
 
 func TestRunClientEchoRoundTrip(t *testing.T) {
 	addr, _ := startServer(t, echoHandler)
-	res := runClient(addr, 7, 4, 2*time.Second, 0)
+	res := runClient(addr, 7, 4, 2*time.Second, 0, 0)
 	if res.err != nil {
 		t.Fatalf("runClient(): %v", res.err)
 	}
@@ -122,7 +122,7 @@ func TestRunClientEchoRoundTrip(t *testing.T) {
 }
 
 func TestRunClientDialFailure(t *testing.T) {
-	res := runClient("127.0.0.1:1", 3, 1, 300*time.Millisecond, 0)
+	res := runClient("127.0.0.1:1", 3, 1, 300*time.Millisecond, 0, 0)
 	if res.err == nil {
 		t.Fatal("dialing a refused port must fail the client")
 	}
@@ -130,7 +130,7 @@ func TestRunClientDialFailure(t *testing.T) {
 
 func TestRunClientCallErrorOnSilentServer(t *testing.T) {
 	addr := startHangingServer(t)
-	res := runClient(addr, 5, 1, 250*time.Millisecond, 0)
+	res := runClient(addr, 5, 1, 250*time.Millisecond, 0, 0)
 	if res.err == nil {
 		t.Fatal("a server that never answers must fail the call")
 	}
@@ -140,7 +140,7 @@ func TestRunClientSurfacesServerError(t *testing.T) {
 	addr, _ := startServer(t, func(action string, data []byte) (any, error) {
 		return nil, errors.New("denied")
 	})
-	res := runClient(addr, 2, 1, 2*time.Second, 0)
+	res := runClient(addr, 2, 1, 2*time.Second, 0, 0)
 	if res.err == nil || !strings.Contains(res.err.Error(), "server error: denied") {
 		t.Fatalf("a server-side error must surface: %v", res.err)
 	}
@@ -150,7 +150,7 @@ func TestRunClientDetectsUndecodableResponse(t *testing.T) {
 	addr, _ := startServer(t, func(action string, data []byte) (any, error) {
 		return 42, nil // not an object: the envelope decode must fail
 	})
-	res := runClient(addr, 2, 1, 2*time.Second, 0)
+	res := runClient(addr, 2, 1, 2*time.Second, 0, 0)
 	if res.err == nil || !strings.Contains(res.err.Error(), "decode response") {
 		t.Fatalf("a non-object response must fail to decode: %v", res.err)
 	}
@@ -160,7 +160,7 @@ func TestRunClientDetectsEchoMismatch(t *testing.T) {
 	addr, _ := startServer(t, func(action string, data []byte) (any, error) {
 		return map[string]any{"action": action, "data": "different"}, nil
 	})
-	res := runClient(addr, 2, 1, 2*time.Second, 0)
+	res := runClient(addr, 2, 1, 2*time.Second, 0, 0)
 	if res.err == nil || !strings.Contains(res.err.Error(), "echo mismatch") {
 		t.Fatalf("a corrupted echo must be detected: %v", res.err)
 	}
@@ -176,7 +176,7 @@ func TestRunClientSubscriberReceivesPushes(t *testing.T) {
 	// printing, which drives the read loop's onEvent into its full-channel
 	// default branch
 	resCh := make(chan result, 1)
-	go func() { resCh <- runClient(addr, 0, 300, 2*time.Second, 10*time.Millisecond) }()
+	go func() { resCh <- runClient(addr, 0, 300, 2*time.Second, 10*time.Millisecond, 0) }()
 
 	deadline := time.Now().Add(3 * time.Second)
 	for {
@@ -224,5 +224,36 @@ func TestCollectPushesPrintsAndIgnoresGarbage(t *testing.T) {
 	case <-done:
 	case <-time.After(3 * time.Second):
 		t.Fatal("collectPushes never returned after its window")
+	}
+}
+
+func TestBigPayload(t *testing.T) {
+	cases := []int{0, 5, 15, 16, 100, 1 << 20}
+	for _, size := range cases {
+		got := bigPayload(size)
+		if len(got) != size {
+			t.Fatalf("bigPayload(%d) produced %d bytes", size, len(got))
+		}
+		if size >= 16 {
+			if !strings.HasPrefix(got, "HEAD:") || !strings.HasSuffix(got, ":TAIL") {
+				t.Fatalf("bigPayload(%d) lost its sentinels: %q...%q",
+					size, got[:min(8, size)], got[max(0, size-8):])
+			}
+		}
+	}
+}
+
+// TestRunClientStreamsLargePayload drives a payload past the fragmentation
+// threshold (MaxFrameSize - 64KiB) through a live echo server: the request
+// and the response both ride FlagMore fragments, and the byte-exact echo
+// comparison proves the reassembly is order-faithful and lossless.
+func TestRunClientStreamsLargePayload(t *testing.T) {
+	addr, _ := startServer(t, echoHandler)
+	res := runClient(addr, 3, 2, 10*time.Second, 0, 1<<20)
+	if res.err != nil {
+		t.Fatalf("runClient(): %v", res.err)
+	}
+	if res.ok != 2 {
+		t.Fatalf("ok = %d, want 2", res.ok)
 	}
 }

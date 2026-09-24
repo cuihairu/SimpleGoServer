@@ -6,6 +6,7 @@
 | --- | --- | --- |
 | 并发连接 | `concurrent-client/main.go` | 多个客户端同时各建一条连接，请求互不阻塞 |
 | 自定义协议收发 | 两侧 | 10 字节帧头 + JSON 载荷的请求/响应与发布/订阅 |
+| 大载荷流式传输 | `concurrent-client/main.go` | `-payload` 指定载荷字节数，超过分片阈值后自动走 FlagMore 分片，对调用方透明 |
 | 心跳与死链检测 | 两侧 | 服务端 `-idle` 回收静默连接，订阅者靠 KeepAlive 定时 PING 保活 |
 | 优雅关闭 | `echo-server/main.go` | SIGINT 后停止 accept → 等存量连接排空 → 强制关闭兜底 |
 
@@ -44,6 +45,17 @@ bye
 ```bash
 go run ./examples/echo-server -addr 127.0.0.1:9000 -broadcast 5s -idle 30s
 go run ./examples/concurrent-client -addr 127.0.0.1:9000 -clients 32 -requests 100
+```
+
+### 流式传输：大载荷自动分片
+
+单个逻辑消息不受单帧 1 MiB 上限限制——超过分片阈值（约 960 KiB）的
+载荷在请求与响应两个方向都被拆成 `FlagMore` 分片帧，接收侧在 codec 内
+聚合还原后照常交付业务，调用方全程无感。动手验证 2 MiB 载荷的完整
+往返（`done` 行必须全部 ok，说明分片重组逐字节无损）：
+
+```bash
+go run ./examples/concurrent-client -clients 2 -requests 3 -payload 2097152 -subscribe 0
 ```
 
 ### 心跳方案：服务端回收 + 客户端保活
@@ -86,6 +98,9 @@ go run ./cmd/cli -resilient -subscribe ticks
 - **客户端单连接多路复用**：`client.Call` 用流 ID 关联请求与响应，一条连接
   上可以并发挂任意多个在途请求；`CloseGracefully` 发 CLOSE 帧等确认，
   而不是静默断开。
+- **流式传输对业务透明**：分片发生在协议层（发送侧 codec 拆分、接收侧
+  聚合），`Call` 的签名与语义不随载荷大小变化；`-payload` 传入超过
+  阈值的字节数即可让这条示例走在分片路径上。
 - **心跳是两端配合的**：`echo-server` 设 `ServerOptions.IdleTimeout` 清理
   僵尸连接；`concurrent-client` 的订阅者用 `client.KeepAlive` 定时 PING，
   既保住自己不被回收，又在连续超时时主动发现死链并唤醒 `Done()` 等待者。

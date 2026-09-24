@@ -6,18 +6,22 @@
 //   - subscribing to a server-pushed topic and receiving PUBLISH frames;
 //   - client-side keepalive so a receive-only subscriber survives the
 //     server's idle timeout;
+//   - streamed large payloads: -payload above the fragmentation threshold
+//     rides the FlagMore path end to end, transparently to the caller;
 //   - a graceful goodbye (CLOSE frame) instead of a silent disconnect.
 //
 // Start the server first, then:
 //
 //	go run ./examples/concurrent-client
 //	go run ./examples/concurrent-client -clients 32 -requests 100
+//	go run ./examples/concurrent-client -payload 2097152
 package main
 
 import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -32,17 +36,31 @@ var (
 	requests  = flag.Int("requests", 20, "requests per connection")
 	timeout   = flag.Duration("timeout", 5*time.Second, "per-request timeout")
 	subscribe = flag.Duration("subscribe", 3*time.Second, "how long to listen to the ticks topic (0 disables)")
+	payload   = flag.Int("payload", 0, "request payload size in bytes (0 = short greeting; sizes past ~960KiB exercise streaming fragmentation)")
 )
 
 func main() {
 	flag.Parse()
 
-	summarize(runAll(*addr, *clients, *requests, *timeout, *subscribe))
+	summarize(runAll(*addr, *clients, *requests, *timeout, *subscribe, *payload))
+}
+
+// bigPayload builds exactly size bytes: sentinel head/tail around a
+// repeating pattern, so the echo comparison proves the fragments were
+// reassembled in order, not just that the lengths match.
+func bigPayload(size int) string {
+	if size < 16 {
+		return strings.Repeat("x", size)
+	}
+	const head, tail = "HEAD:", ":TAIL"
+	body := strings.Repeat("0123456789abcdef", size/16)
+	return (head + body + tail)[:size-len(tail)] + tail
 }
 
 // runAll drives numClients concurrent connections and collects one result
-// per client.
-func runAll(addr string, numClients, requests int, timeout, subscribeFor time.Duration) []result {
+// per client; payloadSize > 0 swaps the greeting for a payload of that
+// many bytes.
+func runAll(addr string, numClients, requests int, timeout, subscribeFor time.Duration, payloadSize int) []result {
 	var wg sync.WaitGroup
 	results := make(chan result, numClients)
 
@@ -50,7 +68,7 @@ func runAll(addr string, numClients, requests int, timeout, subscribeFor time.Du
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
-			results <- runClient(addr, id, requests, timeout, subscribeFor)
+			results <- runClient(addr, id, requests, timeout, subscribeFor, payloadSize)
 		}(i)
 	}
 	wg.Wait()
@@ -87,7 +105,9 @@ type result struct {
 
 // runClient opens one connection, fires requests over it concurrently with
 // the other clients, optionally listens to server pushes, and says goodbye.
-func runClient(addr string, id, requests int, timeout, subscribeFor time.Duration) result {
+// payloadSize > 0 sends that many bytes per request instead of a greeting;
+// past the fragmentation threshold the round trip rides streamed frames.
+func runClient(addr string, id, requests int, timeout, subscribeFor time.Duration, payloadSize int) result {
 	pushes := make(chan *proto.Frame, 16)
 	client, err := proto.Dial(addr, func(frame *proto.Frame) {
 		select {
@@ -121,6 +141,9 @@ func runClient(addr string, id, requests int, timeout, subscribeFor time.Duratio
 
 	for i := 0; i < requests; i++ {
 		payload := fmt.Sprintf("hello from client %d, request %d", id, i)
+		if payloadSize > 0 {
+			payload = bigPayload(payloadSize)
+		}
 		start := time.Now()
 		resp, err := client.Call("echo", payload, timeout)
 		res.latency += time.Since(start)
