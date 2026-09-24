@@ -140,9 +140,31 @@ go test ./pkg/reactor -run '^$' -bench StreamedCall -benchmem
    中约 19 次来自 JSON 反射；帧解码每帧分配 Frame+payload，可用
    `sync.Pool` 复用。基准已可复现，优化前后可用同一命令对比。
 
+## 长稳测试与内存泄漏曲线
+
+`pkg/reactor/soak_test.go` 的 `TestSoakMemoryStability` 驱动两种负载形态，
+周期采样 `runtime.NumGoroutine` 与 `runtime.ReadMemStats`。断言只针对
+单调增长与最终回收，不针对绝对值（GC 时机与机器负载会让绝对值 flaky）。
+`SOAK=1` 门控，CI 默认跳过：
+
+```bash
+SOAK=1 SOAK_SECONDS=180 go test ./pkg/reactor -run TestSoak -race -timeout 15m
+```
+
+实测（2026-09-24，16 核本机，`-race`，90 秒档）：
+
+- **连接 churn**（45 秒跑完 18376 个完整连接周期，Dial + 8 次请求 +
+  优雅关闭）：goroutines 恒 20、heapInuse 恒 3MiB——accept / serveConn /
+  close 回收路径零泄漏；
+- **长连接稳态**（8 条连接持续请求 45 秒）：goroutines 44→36 恒定
+  （差值是采样点落在调用循环结束前后），heap 3-4MiB，无爬升趋势；
+- **回收**：全部客户端显式关闭后，goroutine 立即回到静默水位（20），
+  与 server 自身循环展开后的占位完全一致。
+
+结论：短连接 churn 与长连接稳态两种形态下资源占用均平稳，未发现
+慢性泄漏；与全仓逐测试的 goleak 检测互为印证。
+
 ## 局限
 
 - 回环网络无真实 RTT，跨机延迟将主导单请求数字；
-- echo 业务近乎零计算，真实业务吞吐上限更低；
-- 未包含长稳测试与内存泄漏曲线（可用 `load_test.go` 的压测用例拉长
-  时间并配合 `runtime.ReadMemStats` 观察）。
+- echo 业务近乎零计算，真实业务吞吐上限更低。
