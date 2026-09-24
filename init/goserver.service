@@ -5,6 +5,11 @@ After=network.target
 [Service]
 Type=simple
 ExecStart=/usr/local/bin/simplegoserver --host 0.0.0.0 --port 8080 --config /etc/simplegoserver/config.yml
+# systemd sends SIGTERM on stop; the server traps it and drains
+# connections: up to 10s of drain plus 5s waiting for handlers to
+# return — 15s worst case. 30s = 2x headroom before systemd gives up
+# and SIGKILLs — past that, in-flight connections are cut.
+TimeoutStopSec=30
 Restart=on-failure
 
 [Install]
