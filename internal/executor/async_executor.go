@@ -114,10 +114,10 @@ func (e *AsyncExecutor[T]) Shutdown() {
 	e.Stop()
 }
 
-func (e *AsyncExecutor[T]) Size() int {
-	return len(e.tasks)
-}
-
+// NumWorker reports the worker count the executor was built with. There is
+// deliberately no Size: the task channel is unbuffered (Execute hands work
+// straight to a worker), so len(tasks) would always read zero and any
+// "queue depth" number would be a fiction.
 func (e *AsyncExecutor[T]) NumWorker() int {
 	return e.numWorker
 }
