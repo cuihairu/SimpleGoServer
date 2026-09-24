@@ -2,9 +2,12 @@ package reactor
 
 import (
 	"fmt"
+	"io"
+	"log"
 	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -200,5 +203,86 @@ func TestConnectionRegistryLenAndCloseAll(t *testing.T) {
 	// idempotent: nothing left to close
 	if closed := reg.CloseAll(); closed != 0 {
 		t.Fatalf("second CloseAll() = %d, want 0", closed)
+	}
+}
+
+// stuckAddr satisfies net.Addr for the stuck connection below.
+type stuckAddr struct{}
+
+func (stuckAddr) Network() string { return "tcp" }
+func (stuckAddr) String() string  { return "127.0.0.1:9999" }
+
+// stuckConn simulates a connection whose handler no amount of force-closing
+// can release: Close reports success but Read stays parked until the test
+// opens the gate. This is the worst case graceful shutdown must survive.
+type stuckConn struct {
+	readGate   chan struct{}
+	parkOnce   sync.Once
+	parked     chan struct{}
+	closeCalls atomic.Int32
+}
+
+func (c *stuckConn) Read(b []byte) (int, error) {
+	// signal the first entry so the test only starts a shutdown once the
+	// handler is really parked here — a handler that has not run yet would
+	// exit cleanly on the cancelled ctx and never hit the leak path
+	c.parkOnce.Do(func() { close(c.parked) })
+	<-c.readGate
+	return 0, io.EOF
+}
+
+func (c *stuckConn) Write(b []byte) (int, error)      { return len(b), nil }
+func (c *stuckConn) Close() error                     { c.closeCalls.Add(1); return nil }
+func (c *stuckConn) LocalAddr() net.Addr              { return stuckAddr{} }
+func (c *stuckConn) RemoteAddr() net.Addr             { return stuckAddr{} }
+func (c *stuckConn) SetDeadline(time.Time) error      { return nil }
+func (c *stuckConn) SetReadDeadline(time.Time) error  { return nil }
+func (c *stuckConn) SetWriteDeadline(time.Time) error { return nil }
+
+// TestReactorShutdownReportsStuckHandler pins the leak-reporting contract:
+// a handler that outlives the force-close stage makes ShutdownWithTimeout
+// return an error instead of an unconditional nil, and the force-close
+// really was attempted on the stuck connection.
+func TestReactorShutdownReportsStuckHandler(t *testing.T) {
+	rec := &recordingEvents{}
+	quietLogger := log.New(io.Discard, "", 0)
+	reactor, err := NewReactor(newTestOptions(t), quietLogger, rec, echoInitializer, nil)
+	if err != nil {
+		t.Fatalf("NewReactor(): %v", err)
+	}
+	go reactor.Run()
+	waitListening(t, reactor)
+
+	conn := &stuckConn{readGate: make(chan struct{}), parked: make(chan struct{})}
+	defer close(conn.readGate) // release the handler so nothing leaks
+	// idempotent cleanup so an aborted run still shuts the reactor down and
+	// leaves no goroutines for goleak; on the happy path stopOnce no-ops
+	defer func() { _ = reactor.ShutdownWithTimeout(50 * time.Millisecond) }()
+	reactor.Register(conn)
+	// parked is the exact sync point: it fires from inside the connection's
+	// own Read, so it proves a worker dequeued the conn and its handler is
+	// now parked where force-close cannot reach it. TotalCount() must not
+	// be asserted here — waitListening's probe connection is still being
+	// reaped asynchronously at this point, so the count transiently reads 2.
+	select {
+	case <-conn.parked:
+	case <-time.After(5 * time.Second):
+		t.Fatal("handler never parked in Read")
+	}
+
+	start := time.Now()
+	err = reactor.ShutdownWithTimeout(200 * time.Millisecond)
+	if err == nil {
+		t.Fatal("a handler that outlives shutdown must be reported as an error")
+	}
+	if !strings.Contains(err.Error(), "did not exit") {
+		t.Fatalf("shutdown error = %v, want the stuck-handler message", err)
+	}
+	if conn.closeCalls.Load() == 0 {
+		t.Fatal("force-close never attempted the stuck connection")
+	}
+	// the wait for handlers is bounded by handlersExitTimeout, not skipped
+	if elapsed := time.Since(start); elapsed < 4*time.Second {
+		t.Fatalf("shutdown returned after %s, want it to wait for handlers", elapsed)
 	}
 }
