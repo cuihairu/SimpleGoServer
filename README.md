@@ -119,6 +119,9 @@ go test ./pkg/proto ./pkg/reactor -bench . -benchmem
 可运行示例（并发连接、自定义协议收发、优雅关闭）见
 [examples/README.md](examples/README.md)。
 
+服务端配置外置：默认读取 `./config.yml`，可用 `--config` 指定其他文件，
+同名键可被命令行 flag 覆盖；完整键位见 [config.example.yml](config.example.yml)。
+
 ### 目录结构
 
 ```text

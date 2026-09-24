@@ -269,3 +269,44 @@ func TestReactorDrainsClosedConnectionsQuickly(t *testing.T) {
 	}
 	t.Fatalf("connection count never dropped to 0 (still %d)", reactor.workers.TotalCount())
 }
+
+// TestReactorEventGroupAPI covers the programmatic event.Group surface:
+// handing a connection in without going through Run, closing it again,
+// and asking the balancer for an event loop.
+func TestReactorEventGroupAPI(t *testing.T) {
+	reactor := startTestReactor(t)
+	waitListening(t, reactor)
+
+	loop := reactor.Next()
+	if loop == nil {
+		t.Fatal("Next() returned no event loop")
+	}
+	worker, ok := loop.(*Worker)
+	if !ok {
+		t.Fatalf("Next() returned %T, want *Worker", loop)
+	}
+	if worker.Id() == "" {
+		t.Fatal("event loop has an empty id")
+	}
+
+	// Register hands the connection to a worker even though Run's accept
+	// loop is what normally feeds it; Unregister closes it, and the
+	// handler must release without the force-close stage.
+	conn, peer := net.Pipe()
+	defer peer.Close()
+	reactor.Register(conn)
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && reactor.workers.TotalCount() == 0 {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if reactor.workers.TotalCount() != 1 {
+		t.Fatalf("connection count = %d after Register, want 1", reactor.workers.TotalCount())
+	}
+	reactor.Unregister(conn)
+	for time.Now().Before(deadline) && reactor.workers.TotalCount() != 0 {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if reactor.workers.TotalCount() != 0 {
+		t.Fatalf("connection count = %d after Unregister, want 0", reactor.workers.TotalCount())
+	}
+}

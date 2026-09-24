@@ -375,7 +375,7 @@ func main() {
 1. **主 Reactor**：负责接收新连接并分配给从 Reactor。
 2. **从 Reactor**：处理分配到的连接，并将其分发到工作池。
 3. **工作池**：处理具体的业务逻辑。
-4. **负载均衡**：简单的轮询算法将连接分配给不同的从 Reactor。
+4. **负载均衡**：自适应最少负载策略把新连接分给当前负载最低的 Worker；策略经 `Balancer` 接口可插拔（轮询、加权、IP 哈希等见 `internal/balancer`）。
 
 ### 示例代码
 
@@ -516,18 +516,18 @@ func closeAll(reactors []*Reactor) {
 2. **Reactor 结构**：
     - 每个 Reactor 有一个唯一的 ID，一个 `connChan` 通道用于接收来自主 Reactor 的连接，一个 Worker 列表和一个调度器（`next`）。
     - `start` 方法锁定 OS 线程，并在 `connChan` 上循环接收连接，并将它们分发给下一个 Worker。
-    - `dispatch` 方法实现轮询负载均衡，将连接分配给下一个 Worker。
+    - `dispatch` 方法实现负载均衡，将连接分配给负载均衡器选中的 Worker（实际实现为自适应最少负载）。
 
 3. **主程序 (`main`)**：
     - 创建一个 TCP 监听器并接受连接。
     - 根据 CPU 核心数创建相应数量的 Reactor，每个 Reactor 启动多个 Worker。
-    - 使用轮询方法将连接分发给 Reactor。
+    - 使用负载均衡方法将连接分发给 Reactor。
     - 使用 `sync.WaitGroup` 确保所有连接处理完毕后再关闭程序。
 
 ### 优点
 - **高效利用多核 CPU**：每个 Reactor 和 Worker 绑定到独立的线程上，能够充分利用多核 CPU 的并行能力。
 - **并发处理**：通过 goroutine 并发处理每个连接，提高了处理效率。
-- **负载均衡**：通过轮询算法将连接均匀分配给不同的 Reactor 和 Worker。
+- **负载均衡**：通过负载均衡算法（默认自适应最少负载）将连接分配给不同的 Reactor 和 Worker。
 
 ### 总结
 这个示例展示了如何在 Go 中实现一个具有连接池、工作池和负载均衡的主从 Reactor 模式。根据具体的需求，可以进一步调整和优化代码，以提高性能和可维护性。
