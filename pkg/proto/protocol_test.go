@@ -3,6 +3,7 @@ package proto
 import (
 	"encoding/json"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -1058,5 +1059,69 @@ func TestTopicCacheEviction(t *testing.T) {
 	}
 	if cache[len(cache)-1].seq != uint32(total) {
 		t.Fatalf("newest cached seq = %d, want %d", cache[len(cache)-1].seq, total)
+	}
+}
+
+// TestTopicCacheGlobalBudget pins the memory bound of the replay cache:
+// the per-topic entry cap does not bound memory (topics are unbounded, a
+// cached frame can be up to MaxFrameSize), so a global byte budget evicts
+// whole topics largest-first under pressure. Bookkeeping must stay exact —
+// cacheBytes has to equal the sum of what survives.
+func TestTopicCacheGlobalBudget(t *testing.T) {
+	const budget = 4 * 1024
+	addr, ph := startTCPServer(t, nil)
+	ph.mu.Lock()
+	ph.cacheBudget = budget
+	ph.mu.Unlock()
+
+	// sessions must remember the topics, or Publish would skip the cache
+	// with nobody to ever ask for the replay
+	for _, topic := range []string{"a", "b"} {
+		c, err := Dial(addr, nil)
+		if err != nil {
+			t.Fatalf("Dial(%s): %v", topic, err)
+		}
+		defer c.Close()
+		if _, err := c.Handshake(2 * time.Second); err != nil {
+			t.Fatalf("Handshake(): %v", err)
+		}
+		if err := c.Subscribe(topic, 2*time.Second); err != nil {
+			t.Fatalf("Subscribe(%s): %v", topic, err)
+		}
+	}
+
+	payload := strings.Repeat("x", 900) // ~1KiB per encoded frame
+	for i := 0; i < 10; i++ {
+		if _, err := ph.Publish("a", payload); err != nil {
+			t.Fatalf("Publish a/%d: %v", i, err)
+		}
+		if _, err := ph.Publish("b", payload); err != nil {
+			t.Fatalf("Publish b/%d: %v", i, err)
+		}
+	}
+
+	ph.mu.RLock()
+	held := ph.cacheBytes
+	kept := make(map[string]int, len(ph.topicCache))
+	for topic, cache := range ph.topicCache {
+		kept[topic] = frameBytes(cache)
+	}
+	ph.mu.RUnlock()
+
+	if held > budget {
+		t.Fatalf("cache holds %d bytes, budget is %d", held, budget)
+	}
+	total := 0
+	for _, size := range kept {
+		total += size
+	}
+	if total != held {
+		t.Fatalf("bookkeeping drift: cacheBytes=%d, surviving caches sum to %d (%v)", held, total, kept)
+	}
+	// 20 publishes at ~1KiB each amount to ~20KiB — roughly 5x the budget.
+	// Landing at or under the budget is itself the proof that evictions
+	// fired; without enforcement `held` would sit near 20KiB.
+	if held < budget/2 {
+		t.Fatalf("cache at %d bytes looks over-evicted for budget %d — bookkeeping likely drifts low", held, budget)
 	}
 }

@@ -96,8 +96,15 @@ type ProtocolHandler struct {
 	// topicCache remembers the most recent publishes per topic so a
 	// resumed session can be caught up on what it missed while
 	// disconnected. Entries exist while the topic has subscribers or any
-	// session — including a disconnected one — still records it.
+	// session — including a disconnected one — still records it. The
+	// per-topic entry cap below is not the memory bound: the total byte
+	// budget is enforced across all topics (see cacheBudget).
 	topicCache map[string][]cachedPublish
+
+	// cacheBytes is the total size of the wire frames held in topicCache,
+	// maintained under p.mu; cacheBudget caps it.
+	cacheBytes  int
+	cacheBudget int
 
 	// requireHello turns on strict handshake mode: a connection's first
 	// frame must be HELLO and business frames arriving earlier close it.
@@ -115,6 +122,15 @@ type ProtocolHandler struct {
 // replaying to resumed sessions. Older ones are dropped: delivery stays
 // best-effort, a client that was away for too long simply misses them.
 const topicCacheSize = 64
+
+// defaultCacheBudget caps the replay cache across all topics in bytes —
+// the per-topic entry cap alone does not bound memory, since topics are
+// unbounded and a cached frame can be up to MaxFrameSize. When the budget
+// is exceeded, whole topics are evicted largest-first: partial caches
+// would break the replay guarantee for exactly the topics being squeezed,
+// so they go as a unit. 64 MiB is the order of one topic's worst case
+// (64 entries x 1 MiB frames), so one hot topic cannot crowd out the rest.
+const defaultCacheBudget = 64 << 20
 
 // cachedPublish is one replayable publish: the wire-encoded frame (its
 // StreamId doubles as the monotonically increasing sequence number) kept
@@ -154,6 +170,7 @@ func NewProtocolHandler(handleRequest RequestHandler) *ProtocolHandler {
 		sessions:      make(map[string]*session),
 		connTokens:    make(map[net.Conn]string),
 		topicCache:    make(map[string][]cachedPublish),
+		cacheBudget:   defaultCacheBudget,
 		closed:        make(chan struct{}),
 		sessionTTL:    defaultSessionTTL,
 	}
@@ -404,15 +421,51 @@ func (p *ProtocolHandler) collectReplay(s *session, cursors map[string]uint64) [
 }
 
 // rememberPublish stores a wire frame in the topic cache, evicting the
-// oldest entry past the cache size.
+// oldest entry past the per-topic size and trimming the total byte
+// footprint to the global budget.
 func (p *ProtocolHandler) rememberPublish(topic string, seq uint32, buf []byte) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	cache := append(p.topicCache[topic], cachedPublish{seq: seq, buf: buf})
 	if len(cache) > topicCacheSize {
+		p.cacheBytes -= len(cache[0].buf)
 		cache = cache[len(cache)-topicCacheSize:]
 	}
 	p.topicCache[topic] = cache
+	p.cacheBytes += len(buf)
+	p.enforceCacheBudgetLocked()
+}
+
+// enforceCacheBudgetLocked keeps the total replay cache within the byte
+// budget by evicting whole topics, largest first. A topic that loses its
+// cache simply cannot replay to a session resuming later — the same
+// best-effort contract as the per-topic entry cap, applied under memory
+// pressure.
+func (p *ProtocolHandler) enforceCacheBudgetLocked() {
+	for p.cacheBytes > p.cacheBudget {
+		victim, size := "", 0
+		for topic, cache := range p.topicCache {
+			if s := frameBytes(cache); s > size {
+				victim, size = topic, s
+			}
+		}
+		if victim == "" {
+			// bookkeeping drift would wedge the loop; reset to safe state
+			p.cacheBytes = 0
+			return
+		}
+		p.cacheBytes -= size
+		delete(p.topicCache, victim)
+	}
+}
+
+// frameBytes sums the wire size of a topic's cached frames.
+func frameBytes(cache []cachedPublish) int {
+	total := 0
+	for _, c := range cache {
+		total += len(c.buf)
+	}
+	return total
 }
 
 // dropTopicCacheLocked forgets a topic's replay cache once nothing needs
@@ -427,6 +480,7 @@ func (p *ProtocolHandler) dropTopicCacheLocked(topic string) {
 	if p.sessionRecordsTopicLocked(topic) {
 		return
 	}
+	p.cacheBytes -= frameBytes(p.topicCache[topic])
 	delete(p.topicCache, topic)
 }
 
