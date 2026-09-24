@@ -6,7 +6,7 @@ server:
   port: 8080             # 监听端口
   network: tcp           # 网络类型
   multicore: true        # 多核模式（Worker 数随 CPU 核心数）
-  workers: 10            # Worker 数上限（超过 CPU 核心数会被压回）
+  numWorkers: 10         # Worker 数上限（超过 CPU 核心数会被压回；命令行 flag 为 --workers）
   lockThread: true       # Worker 锁定 OS 线程
   idleTimeout: 90s       # 静默连接回收（0 禁用；收到任何帧都会续期）
   strictHello: false     # 要求首帧必须是 HELLO（严格握手）

@@ -155,3 +155,39 @@ func TestMainRejectsUnknownFlag(t *testing.T) {
 		t.Fatalf("exit code = %d, want 1 for an unknown flag", code)
 	}
 }
+
+// TestConfigExampleKeysMatchBindings pins the shipped config.example.yml to
+// the viper keys runServer actually reads. viper silently ignores keys it
+// does not know, so a misnamed key in the example would make the config
+// pretend to work — exactly the bug this test exists to catch.
+func TestConfigExampleKeysMatchBindings(t *testing.T) {
+	resetViper(t)
+	viper.SetConfigFile("../../config.example.yml")
+	if err := viper.ReadInConfig(); err != nil {
+		t.Fatalf("reading config.example.yml: %v", err)
+	}
+	// keep this list in sync with the BindPFlag/Get calls in main.go
+	want := []string{
+		"server.host",
+		"server.port",
+		"server.network",
+		"server.multicore",
+		"server.numWorkers",
+		"server.lockThread",
+		"server.idleTimeout",
+		"server.strictHello",
+	}
+	for _, key := range want {
+		if !viper.IsSet(key) {
+			t.Errorf("config.example.yml never sets %q, but the server reads it", key)
+		}
+	}
+	section, ok := viper.AllSettings()["server"].(map[string]any)
+	if !ok {
+		t.Fatal("config.example.yml has no server section")
+	}
+	if len(section) != len(want) {
+		t.Errorf("config.example.yml carries %d server keys, want %d — extra keys are silently ignored: %v",
+			len(section), len(want), section)
+	}
+}
