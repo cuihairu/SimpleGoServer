@@ -12,14 +12,23 @@ import (
 	"github.com/cuihairu/simplegoserver/pkg/proto"
 )
 
-// echoInitializer wires the frame codec and an echo protocol handler into
-// every accepted connection.
+// echoHandler echoes the raw JSON payload back untouched.
+func echoHandler(action string, data []byte) (any, error) {
+	return map[string]any{"action": action, "data": json.RawMessage(data)}, nil
+}
+
+// echoProtocol is shared by every connection of every test reactor. The
+// handler owns a session janitor goroutine, so it must be constructed once
+// per process — a per-connection construction would leak one janitor per
+// accepted connection, none of which ever gets closed.
+var echoProtocol = proto.NewProtocolHandler(echoHandler)
+
+// echoInitializer wires the frame codec and the shared protocol handler
+// into every accepted connection.
 func echoInitializer(p handler.Pipeline) error {
 	_ = p.AddLast(
 		proto.NewFrameCodec(),
-		proto.NewProtocolHandler(func(action string, data []byte) (any, error) {
-			return map[string]any{"action": action, "data": json.RawMessage(data)}, nil
-		}),
+		echoProtocol,
 	)
 	return nil
 }

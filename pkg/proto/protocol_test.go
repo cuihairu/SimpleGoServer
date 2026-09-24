@@ -45,6 +45,7 @@ func pipeServer(t *testing.T, requestHandler RequestHandler) (ph *ProtocolHandle
 		}
 	}()
 	t.Cleanup(func() {
+		ph.Close() // stop the session janitor
 		_ = serverSide.Close()
 		_ = clientSide.Close()
 		<-done
@@ -1033,11 +1034,13 @@ func TestTopicCacheEviction(t *testing.T) {
 	if err := c.Subscribe("ticks", 2*time.Second); err != nil {
 		t.Fatalf("Subscribe(): %v", err)
 	}
-	// drain live pushes so the channel never blocks Publish
+	// drain live pushes so the channel never blocks Publish; closing the
+	// channel on cleanup ends this goroutine
 	go func() {
 		for range pushes {
 		}
 	}()
+	t.Cleanup(func() { close(pushes) })
 
 	total := topicCacheSize + 10
 	for i := 0; i < total; i++ {
