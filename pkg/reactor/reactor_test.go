@@ -76,6 +76,14 @@ func waitListening(tb testing.TB, reactor *Reactor) {
 		conn, err := net.DialTimeout("tcp", reactor.Addr().String(), 200*time.Millisecond)
 		if err == nil {
 			_ = conn.Close()
+			// The probe connection is accepted and its handler reaped
+			// asynchronously; on a loaded runner the reap can lag well
+			// past this return. Tests that assert exact worker counts
+			// must not inherit the phantom entry, so wait for the table
+			// to drain before declaring the server ready.
+			for time.Now().Before(deadline) && reactor.workers.TotalCount() > 0 {
+				time.Sleep(10 * time.Millisecond)
+			}
 			return
 		}
 		time.Sleep(20 * time.Millisecond)
