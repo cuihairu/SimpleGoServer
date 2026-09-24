@@ -54,13 +54,24 @@ func TestResilientClientRecoversFromDrop(t *testing.T) {
 			if err != nil || msg.Action != "ticks" {
 				t.Fatalf("unexpected push %v (err=%v)", frame, err)
 			}
-			rc.mu.Lock()
-			alive := rc.client != nil && rc.client != dead
-			rc.mu.Unlock()
-			if !alive {
-				t.Fatal("push arrived on the dead connection")
+			// a resumed push can be delivered by the new client's readLoop
+			// before swap() installs it — Dial starts reading immediately,
+			// and the server restores the subscription during the handshake.
+			// Give the install a moment; if the transport really stayed
+			// dead, rc.client never flips and this fails below.
+			installDeadline := time.Now().Add(2 * time.Second)
+			for {
+				rc.mu.Lock()
+				alive := rc.client != nil && rc.client != dead
+				rc.mu.Unlock()
+				if alive {
+					return
+				}
+				if time.Now().After(installDeadline) {
+					t.Fatal("push arrived on the dead connection")
+				}
+				time.Sleep(5 * time.Millisecond)
 			}
-			return
 		case <-time.After(100 * time.Millisecond):
 			// retry the publish; early attempts may race the reconnect
 		}

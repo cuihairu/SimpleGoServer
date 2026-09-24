@@ -137,13 +137,15 @@ func (rc *ResilientClient) Connect(timeout time.Duration) error {
 	}
 	rc.mu.Unlock()
 
-	c, _, err := rc.dialAndHandshake(timeout)
+	c, res, err := rc.dialAndHandshake(timeout)
 	if err != nil {
 		return err
 	}
-	rc.mu.Lock()
-	rc.client = c
-	rc.mu.Unlock()
+	// swap re-checks closed under the lock: a Close racing the dial would
+	// otherwise leave this fresh client installed and unclosed. It also
+	// records the handshake token, which the first reconnect presents —
+	// discarding res here would start a fresh session on every first drop.
+	rc.swap(c, res)
 	go rc.watch()
 	return nil
 }
@@ -318,10 +320,19 @@ func (rc *ResilientClient) reconnectLoop() bool {
 // subscriptions.
 func (rc *ResilientClient) swap(c *Client, res *HandshakeResult) {
 	rc.mu.Lock()
+	// a Close() that raced the dial wins here: installing the freshly
+	// dialed client after Close would leak a live connection pair — the
+	// client's readLoop and the server-side handler both parked on it, the
+	// exact goleak signature — so close it now; nobody else holds it
+	if rc.closed {
+		rc.mu.Unlock()
+		_ = c.Close()
+		return
+	}
 	old := rc.client
 	rc.client = c
 	rc.token = res.Token
-	resubscribe := !res.Resumed && !rc.closed
+	resubscribe := !res.Resumed
 	topics := make([]string, 0, len(rc.subscribed))
 	if resubscribe {
 		for topic := range rc.subscribed {

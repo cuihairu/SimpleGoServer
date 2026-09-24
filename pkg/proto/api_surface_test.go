@@ -315,3 +315,58 @@ func TestFrameCodecStreamThresholdFragmentsOutbound(t *testing.T) {
 		t.Fatalf("non-frame message became %q", out3.written)
 	}
 }
+
+// TestResilientCloseWinsReconnectRace pins the install guard in swap: a
+// Close() that lands while a reconnect dial is in flight must close the
+// freshly dialed client instead of installing it — otherwise the client's
+// readLoop and the server-side handler leak as a live connection pair,
+// the exact goleak signature that failed the Go-stable CI job.
+func TestResilientCloseWinsReconnectRace(t *testing.T) {
+	addr, _ := startTCPServer(t, nil)
+
+	escaped, err := Dial(addr, nil)
+	if err != nil {
+		t.Fatalf("Dial(): %v", err)
+	}
+
+	// Close() on a never-connected client leaves exactly the state a
+	// Close racing a reconnect dial produces: closed=true, done closed,
+	// rc.client nil
+	rc := NewResilientClient(addr, nil, nil)
+	if err := rc.Close(); err != nil {
+		t.Fatalf("Close(): %v", err)
+	}
+
+	rc.swap(escaped, &HandshakeResult{Token: "tk"})
+
+	select {
+	case <-escaped.Done():
+	case <-time.After(time.Second):
+		t.Fatal("swap installed a client after Close: the freshly dialed connection leaked live")
+	}
+	rc.mu.Lock()
+	installed := rc.client != nil
+	rc.mu.Unlock()
+	if installed {
+		t.Fatal("a closed resilient client must not hold a live client")
+	}
+}
+
+// TestResilientConnectRemembersToken pins that the FIRST handshake's
+// session token is kept: Connect used to discard the handshake result, so
+// the first reconnect presented an empty token and silently lost the
+// session — and with it the offline replay cursors.
+func TestResilientConnectRemembersToken(t *testing.T) {
+	addr, _ := startTCPServer(t, nil)
+	rc := NewResilientClient(addr, nil, nil)
+	defer rc.Close()
+	if err := rc.Connect(2 * time.Second); err != nil {
+		t.Fatalf("Connect(): %v", err)
+	}
+	rc.mu.Lock()
+	token := rc.token
+	rc.mu.Unlock()
+	if token == "" {
+		t.Fatal("Connect discarded the handshake's session token")
+	}
+}
