@@ -101,13 +101,22 @@ go test ./pkg/reactor -run '^$' -bench StreamedCall -benchmem
    960KiB 片 0.2~0.5ms 全部飞快；整个延迟集中在**客户端 conn 的写
    （~25ms）与读（~24ms）**两段。
 4. `GODEBUG=gctrace=1`：GC CPU 占比 ~1%，单次 STW <0.1ms——排除。
-5. 客户端 conn 与裸 conn 无配置差异（`net.Dial` 直出、Go 默认
-   TCP_NODELAY），写路径 `writeAll` 就是裸 `conn.Write`——「客户端
-   侧独慢」的机制未知。当前首推假设：本机常驻高负载放大了 TCP 接收
-   窗口 refill 的调度间隙（960KiB 分片 ≈ 数次窗口往返 × 毫秒级调度
-   延迟），但这**必须**在空载机器上用同一实验复测才能定论——若空载
-   后客户端段延迟消失，则纯属环境；若仍在，按第 3 条的打点方法继续
-   收窄。
+5. **根因已找到并修复（2b1ff8f）**：`EncodeJSON` 把大载荷编码了两次
+   ——先 `json.Marshal(data)`，再经 `JSONMessage` 结构体里
+   `json.RawMessage` 的 append 式 MarshalJSON 逐字节重拷贝一次；
+   1MiB 载荷单次 EncodeJSON 实测 21.4ms（纯 json.Marshal 同载荷仅
+   4.8ms），Call 往返两端各编码一次。同进程 A/B/C 对照把 42ms 的
+   Call 拆解为：裸 socket 分片写 464µs、手拼协议帧打同一 echo server
+   6.7ms、proto.Client 42.4ms——差额与 EncodeJSON 的开销吻合。
+   修复为手工拼装 envelope（RawMessage 透传、字节级等价有测试钉住），
+   EncodeJSON 降到 8.6ms（残余为 string 必经的首次 marshal）。
+6. 修复后端到端仍测不出干净改善：本机 load 在 20~60 间波动，1MiB 档
+   单轮 86~709ms 乱跳；修复前后交替采样中位数 195ms→134ms（方向
+   一致但无统计力）。**空载终审清单**：① 重跑 StreamedCall 全档位；
+   ② 重跑 A/B/C 对照看 C 与 C' 的残差（若 C' 也降到亚毫秒，说明
+   ~50MB/s 传输疑点同样是双重编码的伴生效应；若 C' 仍 ~6ms，则
+   服务端 ReadFull 读模式另有独立成本）；③ 复核客户端 conn 慢于
+   server 端的时间线是否整体消失。
 
 ## 解读
 
