@@ -131,12 +131,16 @@ internal/
   balancer/        负载均衡策略（自适应最少负载等）
   handler/         handler pipeline 实现（Netty 风格的传播语义）
   executor/        任务执行器
-pkg/
+pkg/               核心抽象接口（balancer / executor / logger / options / scheduler），
+                   具体实现位于 internal，依赖方向 internal → pkg
   reactor/         主从 Reactor 核心（accept、worker、连接注册、优雅关闭）
-  proto/           自定义帧协议（编解码、请求/响应、发布/订阅、客户端）
+  proto/           自定义帧协议（编解码、请求/响应、发布/订阅、流式分片、客户端）
   handler/         handler 抽象接口
   event/           事件循环抽象
+  channels/        NIO 风格的通道抽象（acceptor / selector）
+  utils/           通用工具
 docs/              设计与数据文档（Analysis.md、Proto.md、Benchmark.md）
+config.example.yml 服务端配置示例（键位与 cmd/server 的 viper 绑定互锁）
 ```
 
 [设计取舍与需求分析说明文档](docs/Analysis.md) ｜ [自定义协议说明](docs/Proto.md) ｜ [性能基准](docs/Benchmark.md)
