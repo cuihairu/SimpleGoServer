@@ -2,6 +2,7 @@ package proto
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -95,6 +96,63 @@ func TestResilientClientPingAndGracefulClose(t *testing.T) {
 	// closing twice must stay quiet
 	if err := rc.CloseGracefully(time.Second); err != nil {
 		t.Fatalf("second CloseGracefully(): %v", err)
+	}
+}
+
+// TestResilientCursorSnapshot pins the replay-cursor bookkeeping:
+// recordCursor keeps the latest sequence per topic and snapshotCursors
+// returns an independent copy (or nil for an empty table).
+func TestResilientCursorSnapshot(t *testing.T) {
+	rc := NewResilientClient("127.0.0.1:1", nil, nil)
+	defer rc.Close()
+
+	if got := rc.snapshotCursors(); got != nil {
+		t.Fatalf("snapshot of an empty table = %v, want nil", got)
+	}
+
+	pub := func(topic string, seq uint32) *Frame {
+		payload, _ := json.Marshal(&JSONMessage{Action: topic, Data: []byte("{}")})
+		return &Frame{
+			Header:  FrameHeader{FrameType: PUBLISH, StreamId: seq},
+			Payload: payload,
+		}
+	}
+	rc.recordCursor(pub("t1", 3))
+	rc.recordCursor(pub("t1", 7)) // latest wins
+	rc.recordCursor(pub("t2", 1))
+	rc.recordCursor(pub("ignored", 5))
+	rc.recordCursor(&Frame{Header: FrameHeader{FrameType: RESPONSE, StreamId: 9}}) // non-publish ignored
+	rc.recordCursor(&Frame{Header: FrameHeader{FrameType: PUBLISH, StreamId: 9}, Payload: []byte("not json")})
+
+	snap := rc.snapshotCursors()
+	if len(snap) != 3 || snap["t1"] != 7 || snap["t2"] != 1 || snap["ignored"] != 5 {
+		t.Fatalf("snapshot = %v, want t1:7 t2:1 ignored:5 (non-publish and bad-JSON frames skipped)", snap)
+	}
+
+	// mutating the snapshot must not touch the live table
+	snap["t1"] = 999
+	if again := rc.snapshotCursors(); again["t1"] != 7 {
+		t.Fatalf("snapshot mutation leaked into the live table: %v", again)
+	}
+}
+
+// TestResilientOptionsDefaults covers the option normalizers: unset fields
+// fall back to the documented defaults, set fields pass through.
+func TestResilientOptionsDefaults(t *testing.T) {
+	var o ResilientOptions
+	if o.backoffStart() != 100*time.Millisecond {
+		t.Fatalf("default backoffStart = %s", o.backoffStart())
+	}
+	if o.backoffMax() != 5*time.Second {
+		t.Fatalf("default backoffMax = %s", o.backoffMax())
+	}
+	if o.handshakeTimeout() != 5*time.Second {
+		t.Fatalf("default handshakeTimeout = %s", o.handshakeTimeout())
+	}
+
+	o = ResilientOptions{BackoffStart: time.Second, BackoffMax: 10 * time.Second, HandshakeTimeout: 2 * time.Second}
+	if o.backoffStart() != time.Second || o.backoffMax() != 10*time.Second || o.handshakeTimeout() != 2*time.Second {
+		t.Fatalf("explicit options not passed through: %+v", o)
 	}
 }
 

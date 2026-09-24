@@ -204,16 +204,22 @@ func (p *ProtocolHandler) sessionJanitor() {
 		case <-p.closed:
 			return
 		case <-ticker.C:
-			p.mu.Lock()
-			for token, s := range p.sessions {
-				if time.Since(time.Unix(0, s.lastSeen.Load())) > p.sessionTTL {
-					delete(p.sessions, token)
-					if s.conn != nil {
-						delete(p.connTokens, s.conn)
-					}
-				}
+			p.reapExpiredSessions()
+		}
+	}
+}
+
+// reapExpiredSessions is the janitor's sweep, factored out so tests can
+// drive it directly instead of waiting on the production ticker.
+func (p *ProtocolHandler) reapExpiredSessions() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for token, s := range p.sessions {
+		if time.Since(time.Unix(0, s.lastSeen.Load())) > p.sessionTTL {
+			delete(p.sessions, token)
+			if s.conn != nil {
+				delete(p.connTokens, s.conn)
 			}
-			p.mu.Unlock()
 		}
 	}
 }
