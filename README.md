@@ -249,7 +249,7 @@ go test ./pkg/proto -run '^$' -fuzz FuzzDecodeStream -fuzztime 30s
 
 ### 题目二：写一个简单 Go 服务（http-service/）
 
-实现位置——单目录七文件，每层一文件，零第三方依赖：
+实现位置——单目录 4 个源文件加 4 个测试文件，每层一文件，零第三方依赖：
 
 ```text
 http-service/
@@ -275,7 +275,7 @@ go run ./http-service
 curl -s localhost:8080/healthz
 curl -si -X PUT --data '{"n":42}' localhost:8080/kv/answer   # 201 Created
 curl -s localhost:8080/kv/answer                             # {"n":42}
-curl -si -X POST --data '1' localhost:8080/kv/answer         # 405（带 Allow: GET, PUT, DELETE）
+curl -si -X POST --data '1' localhost:8080/kv/answer         # 405（Allow: DELETE, GET, HEAD, PUT，GET 模式隐含 HEAD）
 curl -si -X PUT --data 'not json' localhost:8080/kv/k        # 400
 curl -si -X DELETE localhost:8080/kv/answer                  # 204 No Content
 curl -si localhost:8080/kv/answer                            # 404
