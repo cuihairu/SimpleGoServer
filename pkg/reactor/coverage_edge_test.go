@@ -158,12 +158,18 @@ func TestNewWorkerGroupDefaultsServeConnections(t *testing.T) {
 	if err := group.Dispatch(c1); err != nil {
 		t.Fatalf("Dispatch(): %v", err)
 	}
-	deadline := time.Now().Add(2 * time.Second)
+	// The count only moves once the worker loop is scheduled. The default
+	// pipeline has no codec to answer protocol probes with, so a blocking
+	// round-trip (see TestReactorEventGroupAPI) is not available here —
+	// poll instead, but with a wide window and a coarse tick: a 5ms spin
+	// competes with that very scheduling on a loaded 2-core runner
+	// (fd78d23 CI failure was exactly this shape at 20ms).
+	deadline := time.Now().Add(10 * time.Second)
 	for group.TotalCount() != 1 {
 		if time.Now().After(deadline) {
 			t.Fatal("connection was never taken over by the default pipeline")
 		}
-		time.Sleep(5 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 	}
 
 	cancel()
