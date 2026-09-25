@@ -2,6 +2,7 @@ package proto
 
 import (
 	"bytes"
+	"strings"
 	"testing"
 )
 
@@ -65,6 +66,30 @@ func BenchmarkJSONEnvelope(b *testing.B) {
 		}
 		if _, err := DecodeJSONMessage(frame); err != nil {
 			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkJSONEnvelopeString1MiB is the large-payload shape the streaming
+// benchmarks expose: a plain-string request/response body of 1MiB. The
+// string path is the envelope's hot case — EncodeJSON splices plain-ASCII
+// strings straight into the payload and DecodeJSONMessage aliases the data
+// instead of copying it, so this benchmark pins both optimizations.
+func BenchmarkJSONEnvelopeString1MiB(b *testing.B) {
+	data := strings.Repeat("payload-0123456789", 1<<20/19)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		frame, err := EncodeJSON(REQUEST, uint32(i), "echo", data)
+		if err != nil {
+			b.Fatal(err)
+		}
+		msg, err := DecodeJSONMessage(frame)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if len(msg.Data) == 0 {
+			b.Fatal("empty data")
 		}
 	}
 }

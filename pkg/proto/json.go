@@ -24,9 +24,15 @@ type JSONMessage struct {
 // byte what the struct marshal emits — see TestEncodeJSONMatchesStruct.
 func EncodeJSON(t FrameType, streamId uint32, action string, data any) (*Frame, error) {
 	var raw json.RawMessage
+	stringData := ""
+	directString := false
 	if data != nil {
 		if rm, ok := data.(json.RawMessage); ok {
 			raw = rm // already-encoded JSON: pass through without re-marshaling
+		} else if s, ok := data.(string); ok && jsonPlainASCII(s) {
+			// plain-ASCII string: spliced straight into the payload below,
+			// skipping json.Marshal's intermediate buffer entirely
+			stringData, directString = s, true
 		} else {
 			encoded, err := json.Marshal(data)
 			if err != nil {
@@ -38,10 +44,20 @@ func EncodeJSON(t FrameType, streamId uint32, action string, data any) (*Frame, 
 	// json.Marshal of a plain string cannot fail — there is deliberately
 	// no error path, like mustJSON and reply in protocol.go
 	actionJSON, _ := json.Marshal(action) // tiny; handles escaping
-	payload := make([]byte, 0, len(`{"action":`)+len(actionJSON)+len(`,"data":`)+len(raw)+1)
+	var capacity int
+	if directString {
+		capacity = len(`{"action":`) + len(actionJSON) + len(`,"data":"`) + len(stringData) + len(`"}"`)
+	} else {
+		capacity = len(`{"action":`) + len(actionJSON) + len(`,"data":`) + len(raw) + 1
+	}
+	payload := make([]byte, 0, capacity)
 	payload = append(payload, `{"action":`...)
 	payload = append(payload, actionJSON...)
-	if len(raw) > 0 { // omitempty: an empty RawMessage is omitted, like the struct's tag
+	if directString {
+		payload = append(payload, `,"data":"`...)
+		payload = append(payload, stringData...)
+		payload = append(payload, '"')
+	} else if len(raw) > 0 { // omitempty: an empty RawMessage is omitted, like the struct's tag
 		payload = append(payload, `,"data":`...)
 		payload = append(payload, raw...)
 	}
@@ -56,16 +72,54 @@ func EncodeJSON(t FrameType, streamId uint32, action string, data any) (*Frame, 
 	}, nil
 }
 
+// jsonPlainASCII reports whether s can be wrapped in bare quotes and be
+// byte-for-byte what the stdlib encoder emits: every byte is printable
+// ASCII, and none of the characters stdlib escapes — quote, backslash,
+// and the HTML-escaping set < > & (the default encoder escapes those even
+// in pure ASCII). This is strictly narrower than what the stdlib encoder
+// handles — anything else takes the json.Marshal path — so the splice is
+// exactly equivalent to marshaling the same string (asserted by
+// TestEncodeJSONMatchesStruct and the plain-ASCII quick generator).
+func jsonPlainASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c < 0x20 || c > 0x7E || c == '"' || c == '\\' || c == '<' || c == '>' || c == '&' {
+			return false
+		}
+	}
+	return true
+}
+
+// zeroCopyRawMessage mirrors json.RawMessage except its UnmarshalJSON
+// records the decoder's own sub-slice of the input instead of copying it.
+// DecodeJSONMessage is its only user: the returned Data aliases
+// frame.Payload, which the caller already owns and treats as read-only —
+// on a 1MiB response that aliasing spares a full megabyte copy plus
+// json's pre-validation pass is unaffected either way.
+type zeroCopyRawMessage []byte
+
+func (m *zeroCopyRawMessage) UnmarshalJSON(data []byte) error {
+	*m = data
+	return nil
+}
+
 // DecodeJSONMessage unmarshals a frame payload into a JSONMessage.
+//
+// The Data field aliases the frame payload rather than copying it (the
+// struct's json.RawMessage would append-copy the whole payload); callers
+// must treat Data as read-only for as long as they hold the frame.
 func DecodeJSONMessage(frame *Frame) (*JSONMessage, error) {
 	if frame == nil {
 		return nil, errors.New("proto: frame is nil")
 	}
-	msg := &JSONMessage{}
-	if err := json.Unmarshal(frame.Payload, msg); err != nil {
+	var shadow struct {
+		Action string             `json:"action"`
+		Data   zeroCopyRawMessage `json:"data,omitempty"`
+	}
+	if err := json.Unmarshal(frame.Payload, &shadow); err != nil {
 		return nil, err
 	}
-	return msg, nil
+	return &JSONMessage{Action: shadow.Action, Data: json.RawMessage(shadow.Data)}, nil
 }
 
 // DecodeJSONData unmarshals the Data field of a frame payload into out.
