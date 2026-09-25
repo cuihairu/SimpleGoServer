@@ -244,9 +244,11 @@ func TestWithDefaultPipeline(t *testing.T) {
 }
 
 // TestNewErrorHandlerSingleton pins the lazy singleton: repeated calls
-// return the same instance.
+// return the same instance. Two explicit variables rather than a
+// doubled call expression, so the intent reads as identity comparison.
 func TestNewErrorHandlerSingleton(t *testing.T) {
-	if NewErrorHandler() != NewErrorHandler() {
+	first, second := NewErrorHandler(), NewErrorHandler()
+	if first != second {
 		t.Fatal("NewErrorHandler() must return the same instance")
 	}
 }

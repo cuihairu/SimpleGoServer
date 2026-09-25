@@ -39,7 +39,6 @@ func (w *Worker) SetCount(int) {}
 
 type WorkerGroup struct {
 	balancer      pkg.Balancer[*Worker]
-	opts          pkg.Options
 	eventListener event.Listener
 	registry      *ConnectionRegistry
 

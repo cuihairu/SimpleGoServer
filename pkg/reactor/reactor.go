@@ -24,15 +24,14 @@ import (
 // live one in main.
 
 type Reactor struct {
-	opts                pkg.Options
-	listener            net.Listener
-	workers             *WorkerGroup
-	cancelFunc          context.CancelFunc
-	ctx                 context.Context
-	eventListener       event.Listener
-	pipelineInitializer handler.PipelineInitializer
-	logger              *log.Logger
-	stopOnce            sync.Once
+	opts          pkg.Options
+	listener      net.Listener
+	workers       *WorkerGroup
+	cancelFunc    context.CancelFunc
+	ctx           context.Context
+	eventListener event.Listener
+	logger        *log.Logger
+	stopOnce      sync.Once
 	// stopping is set just before the listener closes so the accept loop
 	// can tell a shutdown close from a real accept failure and exit
 	// quietly instead of spinning on error logs for the whole drain

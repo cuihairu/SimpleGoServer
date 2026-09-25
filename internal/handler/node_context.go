@@ -70,7 +70,7 @@ func (n *NodeContext) Write(message handler.Message) {
 }
 
 func (n *NodeContext) Close(exception error) {
-	n.pipeline.Conn().Close()
+	_ = n.pipeline.Conn().Close()
 }
 
 func (n *NodeContext) Attachment() handler.Attachment {

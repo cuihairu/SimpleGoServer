@@ -30,7 +30,7 @@ func (t TailHeader) HandleException(ctx handler.ExceptionContext, ex handler.Exc
 		"Exception throw on ", ctx.Conn().RemoteAddr(), "\n",
 		ex,
 	)
-	ctx.Conn().Close()
+	_ = ctx.Conn().Close()
 }
 
 var _ handler.ExceptionHandler = (*TailHeader)(nil)
