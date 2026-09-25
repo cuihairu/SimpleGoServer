@@ -43,16 +43,31 @@ func EncodeJSON(t FrameType, streamId uint32, action string, data any) (*Frame, 
 	}
 	// json.Marshal of a plain string cannot fail — there is deliberately
 	// no error path, like mustJSON and reply in protocol.go
-	actionJSON, _ := json.Marshal(action) // tiny; handles escaping
+	actionPlain := jsonPlainASCII(action)
 	var capacity int
-	if directString {
-		capacity = len(`{"action":`) + len(actionJSON) + len(`,"data":"`) + len(stringData) + len(`"}"`)
+	if actionPlain {
+		if directString {
+			capacity = len(`{"action":"`) + len(action) + len(`","data":"`) + len(stringData) + len(`"}"`)
+		} else {
+			capacity = len(`{"action":"`) + len(action) + len(`","data":`) + len(raw) + 1
+		}
 	} else {
-		capacity = len(`{"action":`) + len(actionJSON) + len(`,"data":`) + len(raw) + 1
+		if directString {
+			capacity = len(`{"action":`) + len(`""`) + len(`,"data":"`) + len(stringData) + len(`"}"`)
+		} else {
+			capacity = len(`{"action":`) + len(`""`) + len(`,"data":`) + len(raw) + 1
+		}
 	}
 	payload := make([]byte, 0, capacity)
 	payload = append(payload, `{"action":`...)
-	payload = append(payload, actionJSON...)
+	if actionPlain {
+		payload = append(payload, '"')
+		payload = append(payload, action...)
+		payload = append(payload, '"')
+	} else {
+		actionJSON, _ := json.Marshal(action) // tiny; handles escaping
+		payload = append(payload, actionJSON...)
+	}
 	if directString {
 		payload = append(payload, `,"data":"`...)
 		payload = append(payload, stringData...)
