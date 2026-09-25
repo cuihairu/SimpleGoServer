@@ -39,7 +39,7 @@ func NewAsyncExecutor[T any](numWorker int) *AsyncExecutor[T] {
 	if numWorker < 1 {
 		numWorker = runtime.NumCPU()
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(context.Background()) // #nosec G118 -- cancel is stored and invoked in Stop; static analysis cannot follow struct-held cancels
 	executor := &AsyncExecutor[T]{
 		tasks:     make(chan pkg.Action),
 		futureCh:  make(chan pkg.Future[T]),

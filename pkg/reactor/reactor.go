@@ -154,7 +154,7 @@ func (r *Reactor) Addr() net.Addr {
 // connections to finish on their own and force-closes whatever is still
 // open after the drain timeout.
 func (r *Reactor) ShutdownGracefully() {
-	r.ShutdownWithTimeout(defaultDrainTimeout)
+	_ = r.ShutdownWithTimeout(defaultDrainTimeout) // best-effort wrapper; callers needing the result use ShutdownWithTimeout
 }
 
 // defaultDrainTimeout bounds how long a graceful shutdown waits for

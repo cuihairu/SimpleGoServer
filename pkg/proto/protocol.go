@@ -714,7 +714,9 @@ func newFrame(t FrameType, streamId uint32, payload []byte) *Frame {
 		Header: FrameHeader{
 			FrameType: t,
 			StreamId:  streamId,
-			Length:    int32(len(payload)),
+			// an overflowed int32 goes negative and is rejected by Encode's
+			// sign check, so a corrupt length can never reach the wire
+			Length: int32(len(payload)), // #nosec G115
 		},
 		Payload: payload,
 	}

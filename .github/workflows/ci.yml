@@ -31,5 +31,15 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      # gosec runs on the newest toolchain only: pinned to a tag that is
+      # known to parse that toolchain's export data (older checkers fail
+      # with "export data version" errors), and the zero-warning baseline
+      # (documented #nosec justifications included) is enforced from here on.
+      - name: Lint (gosec)
+        if: matrix.go == 'stable'
+        run: |
+          go install github.com/securego/gosec/v2/cmd/gosec@v2.29.0
+          gosec -quiet ./...
+
       - name: Test
         run: go test ./... -race -count=1

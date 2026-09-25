@@ -213,7 +213,7 @@ func (rc *ResilientClient) CloseGracefully(timeout time.Duration) error {
 	if c != nil {
 		_ = c.CloseGracefully(timeout)
 	}
-	rc.Close()
+	_ = rc.Close()
 	return nil
 }
 

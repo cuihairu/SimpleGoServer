@@ -121,7 +121,7 @@ func (c *Client) HandshakeWith(session string, cursors map[string]uint64, timeou
 		_ = c.Close()
 		return nil, fmt.Errorf("proto: malformed handshake response: %w", err)
 	}
-	c.version.Store(int32(agreed.Version))
+	c.version.Store(int32(agreed.Version)) // #nosec G115 -- small positive protocol version from negotiation
 	return &HandshakeResult{
 		Version:  agreed.Version,
 		Features: agreed.Features,
@@ -314,7 +314,7 @@ func (c *Client) readLoop() {
 		frame, err := DecodeStreamed(c.conn)
 		if err != nil {
 			c.failPending()
-			c.Close()
+			_ = c.Close() // the read loop is ending either way; Close's error has no consumer
 			return
 		}
 		if frame.Header.FrameType == RESPONSE || frame.Header.FrameType == PONG {

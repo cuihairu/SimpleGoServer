@@ -54,7 +54,7 @@ func (I *IPHashingBalancer[T]) Next(key string) (T, error) {
 // never fails, so there is deliberately no error to propagate.
 func hashKey(key string) uint32 {
 	hasher := fnv.New32a()
-	hasher.Write([]byte(key))
+	_, _ = hasher.Write([]byte(key)) // fnv's Write never returns an error
 	return hasher.Sum32()
 }
 

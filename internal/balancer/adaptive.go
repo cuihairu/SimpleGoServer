@@ -35,7 +35,7 @@ func NewAdaptiveBalancer[T LoadAware]() *AdaptiveBalancer[T] {
 	return &AdaptiveBalancer[T]{
 		backends: make([]T, 0),
 		rwMutex:  sync.RWMutex{},
-		random:   rand.New(rand.NewSource(time.Now().UnixNano())),
+		random:   rand.New(rand.NewSource(time.Now().UnixNano())), // #nosec G404 -- tie-break randomness only, no security role
 	}
 }
 

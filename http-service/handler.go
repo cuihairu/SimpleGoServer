@@ -65,7 +65,7 @@ func (h *handler) get(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(v)
+	_, _ = w.Write(v) // #nosec G705 -- v is json.Valid-checked and served as application/json; the KV echo is the contract, never rendered as HTML
 }
 
 func (h *handler) put(w http.ResponseWriter, r *http.Request) {

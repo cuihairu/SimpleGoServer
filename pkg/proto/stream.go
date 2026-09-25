@@ -71,7 +71,7 @@ func DecodeStreamed(r io.Reader) (*Frame, error) {
 				Header: FrameHeader{
 					FrameType: frameType,
 					StreamId:  streamId,
-					Length:    int32(len(buf)),
+					Length:    int32(len(buf)), // #nosec G115 -- buf is a decoded fragment, bounded by MaxFrameSize in Decode
 				},
 				Payload: buf,
 			}, nil

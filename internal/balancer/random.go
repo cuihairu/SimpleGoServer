@@ -30,7 +30,7 @@ func (r *RandomBalancer[T]) Next(key string) (T, error) {
 		return r.backends[0], nil
 	}
 
-	return r.backends[rand.Intn(len(r.backends))], nil
+	return r.backends[rand.Intn(len(r.backends))], nil // #nosec G404 -- distribution fairness only, no security role
 }
 
 func (r *RandomBalancer[T]) Register(registerBackend T) error {

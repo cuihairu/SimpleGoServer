@@ -38,7 +38,7 @@ func EncodeHeaderTo(dst []byte, header *FrameHeader) {
 	dst[0] = byte(header.FrameType)
 	dst[1] = header.Flags
 	binary.BigEndian.PutUint32(dst[2:6], header.StreamId)
-	binary.BigEndian.PutUint32(dst[6:10], uint32(header.Length))
+	binary.BigEndian.PutUint32(dst[6:10], uint32(header.Length)) // #nosec G115 -- Length was validated against MaxFrameSize by Encode
 }
 
 // DecodeHeader parses a header from src, which must be at least HeaderSize long.
@@ -46,7 +46,7 @@ func DecodeHeader(src []byte) (*FrameHeader, error) {
 	if len(src) < HeaderSize {
 		return nil, fmt.Errorf("proto: short header %d < %d", len(src), HeaderSize)
 	}
-	length := int32(binary.BigEndian.Uint32(src[6:10]))
+	length := int32(binary.BigEndian.Uint32(src[6:10])) // #nosec G115 -- deliberate wrap: high bits become a negative length, rejected by the < 0 check below
 	if length < 0 || length > MaxFrameSize {
 		return nil, fmt.Errorf("%w: announced %d, limit %d", ErrFrameTooLarge, length, MaxFrameSize)
 	}
