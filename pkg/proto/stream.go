@@ -47,7 +47,10 @@ func DecodeStreamed(r io.Reader) (*Frame, error) {
 	}
 	streamId := frame.Header.StreamId
 	frameType := frame.Header.FrameType
-	buf := append([]byte(nil), frame.Payload...)
+	// alias the first fragment instead of copying it: its buffer came
+	// freshly allocated from Decode and has no other owner, so the
+	// appends below can grow it without anyone observing the old slice
+	buf := frame.Payload
 	for {
 		next, err := Decode(r)
 		if err != nil {
