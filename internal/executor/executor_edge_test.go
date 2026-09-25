@@ -26,17 +26,22 @@ func stoppedExecutor[T any](buffer int) *AsyncExecutor[T] {
 // TestSubmitAfterStopHandsBackCancelledFuture: a send that lands after the
 // executor was stopped must not return a future nobody will ever resolve —
 // the re-check catches the cancelled ctx and cancels the future instead of
-// leaving Get blocked forever. The re-check is a select between a ready
-// Done and default, which Go resolves randomly, so the loop just gives the
-// Done arm its turn.
+// leaving Get blocked forever. Both arms of Submit's outer select are ready
+// here (buffered channel, cancelled ctx) and Go resolves that randomly, so
+// the loop must not stop at the first cancelled future: running the full
+// batch gives the send arm its turn with overwhelming certainty while also
+// asserting that every single submit resolves cancelled, whichever arm won.
 func TestSubmitAfterStopHandsBackCancelledFuture(t *testing.T) {
 	e := stoppedExecutor[int](128)
 	for i := 0; i < 64; i++ {
-		if e.Submit(func(context.Context) (int, error) { return i, nil }).IsCancelled() {
-			return
+		future := e.Submit(func(context.Context) (int, error) { return i, nil })
+		if !future.IsCancelled() {
+			t.Fatalf("submit %d on a stopped executor was not cancelled", i)
+		}
+		if v, err := future.Get(); err == nil || v != 0 {
+			t.Fatalf("Get() = (%d, %v), want (0, cancelled)", v, err)
 		}
 	}
-	t.Fatal("64 submits on a stopped executor never hit the cancelled re-check")
 }
 
 // TestExecuteAfterStopDropsQuietly: same contract for the void path — the

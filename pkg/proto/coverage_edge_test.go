@@ -865,3 +865,96 @@ func TestResilientCloseWinsOverReconnectBackoff(t *testing.T) {
 	}
 	time.Sleep(100 * time.Millisecond) // let the loop observe the close
 }
+
+// TestPublishPrunesDeadSubscriberKeepsTopicForSurvivor: when a publish
+// write fails to one subscriber of a topic that still has live members,
+// removeSubscriber must prune only the dead transport and the topic's
+// replay cache must survive — dropTopicCacheLocked's live-member early
+// return is what keeps a busy topic from losing its catch-up history the
+// moment one subscriber dies.
+func TestPublishPrunesDeadSubscriberKeepsTopicForSurvivor(t *testing.T) {
+	ph := NewProtocolHandler(echoHandler)
+	t.Cleanup(ph.Close) // stop the session janitor
+
+	aliveSrv, alive := net.Pipe()
+	deadSrv, dead := net.Pipe()
+	t.Cleanup(func() {
+		_ = aliveSrv.Close()
+		_ = alive.Close()
+		_ = deadSrv.Close()
+		_ = dead.Close()
+	})
+
+	// subscribe both transports directly; the ack writes go nowhere
+	aliveStub := &inboundContextStub{conn: aliveSrv}
+	deadStub := &inboundContextStub{conn: deadSrv}
+	for _, stub := range []*inboundContextStub{aliveStub, deadStub} {
+		frame, err := EncodeJSON(SUBSCRIBE, 1, "topic", nil)
+		if err != nil {
+			t.Fatalf("EncodeJSON(): %v", err)
+		}
+		ph.HandleRead(stub, frame)
+	}
+	if got := ph.Subscribers("topic"); got != 2 {
+		t.Fatalf("subscribers = %d, want 2", got)
+	}
+
+	// the survivor must drain its pipe or the synchronous publish write
+	// would block forever
+	received := make(chan *Frame, 1)
+	go func() {
+		_ = alive.SetReadDeadline(time.Now().Add(3 * time.Second))
+		frame, err := Decode(alive)
+		if err == nil {
+			received <- frame
+		}
+	}()
+
+	// kill the second subscriber; its next write must fail synchronously
+	// (net.Pipe writes to a closed peer return ErrClosedPipe)
+	_ = dead.Close()
+
+	delivered, err := ph.Publish("topic", "payload")
+	if err != nil {
+		t.Fatalf("Publish(): %v", err)
+	}
+	if delivered != 1 {
+		t.Fatalf("delivered = %d, want 1 (only the survivor)", delivered)
+	}
+	if got := ph.Subscribers("topic"); got != 1 {
+		t.Fatalf("subscribers after prune = %d, want 1", got)
+	}
+	// the survivor keeps the replay cache alive
+	ph.mu.RLock()
+	_, cached := ph.topicCache["topic"]
+	ph.mu.RUnlock()
+	if !cached {
+		t.Fatal("topic cache dropped while a live subscriber remains")
+	}
+
+	// the survivor must have received the publish
+	select {
+	case frame := <-received:
+		if frame.Header.FrameType != PUBLISH {
+			t.Fatalf("received frame type = %s, want PUBLISH", frame.Header.FrameType)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("survivor never received the publish")
+	}
+}
+
+// TestReconnectLoopExitsOnClosedClient: the reconnect loop's first act is
+// checking the client's done channel — a client that was closed before the
+// loop got a turn must report "stopped" immediately instead of dialing.
+func TestReconnectLoopExitsOnClosedClient(t *testing.T) {
+	rc := NewResilientClient("127.0.0.1:1", nil, &ResilientOptions{
+		BackoffStart: time.Millisecond,
+		BackoffMax:   time.Millisecond,
+	})
+	if err := rc.Close(); err != nil {
+		t.Fatalf("Close(): %v", err)
+	}
+	if rc.reconnectLoop() {
+		t.Fatal("reconnectLoop on a closed client should report stopped")
+	}
+}
