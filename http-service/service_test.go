@@ -50,6 +50,9 @@ func TestServiceGetDelete(t *testing.T) {
 	if _, err := s.Get(ctx, "bad key"); !errors.Is(err, ErrKeyInvalid) {
 		t.Fatalf("Get with bad key: %v, want ErrKeyInvalid", err)
 	}
+	if _, err := s.Delete(ctx, "bad key"); !errors.Is(err, ErrKeyInvalid) {
+		t.Fatalf("Delete with bad key: %v, want ErrKeyInvalid", err)
+	}
 	if _, err := s.Put(ctx, "k", strings.NewReader(`{"n":1}`)); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
@@ -82,5 +85,19 @@ func TestServicePropagatesStoreErrors(t *testing.T) {
 	_, err := s.Put(context.Background(), "k", strings.NewReader(`1`))
 	if err == nil || errors.Is(err, ErrValueInvalid) || !strings.Contains(err.Error(), "connection refused") {
 		t.Fatalf("Put through failing store: %v", err)
+	}
+}
+
+// errReader fails mid-read: the read error must surface wrapped, not be
+// mistaken for an empty or a short body.
+type errReader struct{}
+
+func (errReader) Read([]byte) (int, error) { return 0, errors.New("read boom") }
+
+func TestServicePutReadError(t *testing.T) {
+	s := NewService(NewMemoryStore(), defaultMaxValueBytes)
+	_, err := s.Put(context.Background(), "k", errReader{})
+	if err == nil || !strings.Contains(err.Error(), "read body: read boom") {
+		t.Fatalf("Put with a failing body reader: %v", err)
 	}
 }

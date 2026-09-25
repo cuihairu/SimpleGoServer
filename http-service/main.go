@@ -7,7 +7,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"log/slog"
 	"net/http"
@@ -17,7 +16,11 @@ import (
 	"time"
 )
 
-func main() { os.Exit(run(os.Args[1:])) }
+// osExit is a variable so tests can run main() without terminating the
+// test binary (same shape as cmd/cli).
+var osExit = os.Exit
+
+func main() { osExit(run(os.Args[1:])) }
 
 // run is the testable entry point: flags in, exit code out. main only
 // translates the code into os.Exit, so the whole lifecycle below —
@@ -60,12 +63,12 @@ func run(args []string) int {
 	log.Info("listening", "addr", *addr)
 	select {
 	case err := <-errCh:
-		// Failed to bind, or listener closed under us: report and exit.
-		if err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Error("server failed", "err", err)
-			return 1
-		}
-		return 0
+		// ListenAndServe always returns non-nil. ErrServerClosed only
+		// ever comes after Shutdown, and the only Shutdown call lives
+		// in the ctx branch below — so reaching this case at all means
+		// the bind failed (or the listener died under us): report, exit.
+		log.Error("server failed", "err", err)
+		return 1
 	case <-ctx.Done():
 		// Shutdown stops accepting, then waits for in-flight handlers
 		// and closes keep-alive connections. The timeout turns a stuck

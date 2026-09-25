@@ -89,6 +89,8 @@ func TestHandlerErrorContract(t *testing.T) {
 		want   int
 	}{
 		{"unknown key", "GET", "/kv/none", "", 404},
+		{"delete unknown key", "DELETE", "/kv/none", "", 404},
+		{"delete bad key", "DELETE", "/kv/a%20b", "", 400},
 		{"bad key", "GET", "/kv/a%20b", "", 400},
 		{"invalid JSON", "PUT", "/kv/k", `nope`, 400},
 		{"value too large", "PUT", "/kv/k", `"` + strings.Repeat("x", 64) + `"`, 413},
