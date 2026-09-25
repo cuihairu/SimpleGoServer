@@ -211,7 +211,7 @@ pkg/               核心抽象接口（balancer / executor / logger / options /
   event/           事件循环抽象
   channels/        NIO 风格的通道抽象（acceptor / selector）
   utils/           通用工具
-docs/              设计与数据文档（Analysis.md、Proto.md、Benchmark.md）
+docs/              设计与数据文档（DESIGN.md、NOTES.md、Analysis.md、Proto.md、Benchmark.md）
 config.example.yml 服务端配置示例（键位与 cmd/server 的 viper 绑定互锁）
 ```
 
@@ -250,7 +250,7 @@ SOAK=1 go test ./pkg/reactor -run TestSoak -race -timeout 15m
 
 命令行形态的服务端与协议客户端在 `cmd/server` 与 `cmd/cli`；更完整的可运行示例见 [examples/README.md](examples/README.md)。服务端配置外置：默认读取 `./config.yml`，`--config` 指定其他文件，同名键可被命令行 flag 覆盖；完整键位见 [config.example.yml](config.example.yml)。
 
-深入阅读：[设计取舍与需求分析](docs/Analysis.md) ｜ [自定义协议说明](docs/Proto.md) ｜ [性能基准](docs/Benchmark.md)。
+深入阅读：[设计文档：架构与取舍](docs/DESIGN.md) ｜ [技术知识梳理与考点](docs/NOTES.md) ｜ [设计取舍与需求分析](docs/Analysis.md) ｜ [自定义协议说明](docs/Proto.md) ｜ [性能基准](docs/Benchmark.md)。
 
 ### 题目二：写一个简单 Go 服务（http-service/）
 
