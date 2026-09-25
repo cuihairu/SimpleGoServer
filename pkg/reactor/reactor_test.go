@@ -3,6 +3,7 @@ package reactor
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net"
 	"strings"
 	"testing"
@@ -325,15 +326,66 @@ func TestReactorEventGroupAPI(t *testing.T) {
 	// loop is what normally feeds it; Unregister closes it, and the
 	// handler must release without the force-close stage.
 	//
-	// Asserts are baseline-relative: a probe connection from
-	// waitListening may still sit in the kernel backlog and enter the
-	// table at any moment during this test (CI stable, run 36059601446),
-	// so absolute counts transiently overshoot — see waitCount.
-	base := reactor.workers.TotalCount()
+	// Registration is proven by the connection's own protocol traffic,
+	// not by the worker count. The count only moves once the worker loop
+	// gets scheduled, and an earlier polling form of this test
+	// (waitCount against TotalCount, fd78d23 CI failure) spun in 20ms
+	// sleeps competing with that very scheduling — red on a loaded
+	// 2-core runner even though nothing in the registration path blocks.
+	// Here the test goroutine blocks in Write/Read instead, yielding the
+	// P to the worker, with net.Pipe deadlines keeping every wait
+	// bounded. The echo round-trip is also a strictly stronger fact than
+	// a counter bump: the whole pipeline is alive end to end.
 	conn, peer := net.Pipe()
 	defer peer.Close()
 	reactor.Register(conn)
-	waitCount(t, reactor, base+1)
+
+	req, err := proto.EncodeJSON(proto.REQUEST, 1, "echo", "group-api")
+	if err != nil {
+		t.Fatalf("EncodeJSON(): %v", err)
+	}
+	wire, err := proto.Encode(req)
+	if err != nil {
+		t.Fatalf("Encode(): %v", err)
+	}
+	if err := peer.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		t.Fatalf("SetWriteDeadline(): %v", err)
+	}
+	// net.Pipe hands Write bytes straight to the reader: the Write
+	// completing at all means the frame codec is consuming this
+	// connection, which is only possible once Register took effect.
+	if n, werr := peer.Write(wire); werr != nil || n != len(wire) {
+		t.Fatalf("worker never consumed the registered connection (wrote %d/%d bytes): %v", n, len(wire), werr)
+	}
+
+	if err := peer.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		t.Fatalf("SetReadDeadline(): %v", err)
+	}
+	resp, err := proto.Decode(peer)
+	if err != nil {
+		t.Fatalf("no response on the registered connection: %v", err)
+	}
+	if resp.Header.FrameType != proto.RESPONSE || resp.Header.StreamId != 1 {
+		t.Fatalf("got %v stream %d, want RESPONSE stream 1", resp.Header.FrameType, resp.Header.StreamId)
+	}
+	msg, err := proto.DecodeJSONMessage(resp)
+	if err != nil {
+		t.Fatalf("DecodeJSONMessage(): %v", err)
+	}
+	if msg.Action != "echo" {
+		t.Fatalf("response action = %q, want echo", msg.Action)
+	}
+
+	// Unregister must close the connection: EOF on the peer is the
+	// release-side mirror of the round-trip — the handler tore its
+	// pipeline down rather than merely dropping a counter. The deadline
+	// is refreshed before the close: net.Pipe's Close invalidates both
+	// ends, so setting it afterwards would fail outright.
+	if err := peer.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		t.Fatalf("SetReadDeadline(): %v", err)
+	}
 	reactor.Unregister(conn)
-	waitCount(t, reactor, base)
+	if _, rerr := proto.Decode(peer); rerr != io.EOF {
+		t.Fatalf("read after Unregister = %v, want io.EOF (handler must close the connection)", rerr)
+	}
 }
