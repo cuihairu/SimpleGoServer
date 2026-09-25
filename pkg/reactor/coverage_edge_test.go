@@ -245,6 +245,27 @@ func TestAddConnSeesCancellationAfterQueuedSend(t *testing.T) {
 	}
 }
 
+// TestAddConnTakesCancellationShortcut pins the outer Done arm of
+// AddConn's select: with the queue send permanently unavailable (no
+// receiver on an unbuffered channel) and the ctx already cancelled, the
+// Done arm is selected deterministically — no racing Stop, no coin flip.
+// (The sibling race-flavored test drives the same contract with a real
+// stopped worker; this one exists so coverage of the branch never bets
+// on the scheduler.)
+func TestAddConnTakesCancellationShortcut(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	w := &Worker{ctx: ctx, newCh: make(chan net.Conn), id: "w"}
+	c1, c2 := net.Pipe()
+	defer func() { _ = c1.Close(); _ = c2.Close() }()
+	if err := w.AddConn(c1); err == nil {
+		t.Fatal("AddConn on a stopped worker must fail, not queue silently")
+	}
+	if !lcClosed(t, c2) {
+		t.Fatal("the rejected connection must be closed, not parked")
+	}
+}
+
 // TestWorkerClosePendingDropsQueuedConnections: connections still queued
 // when the worker stops must be closed, never leaked.
 func TestWorkerClosePendingDropsQueuedConnections(t *testing.T) {
