@@ -188,3 +188,45 @@ func TestResilientClientRequiresConnect(t *testing.T) {
 		t.Fatalf("Subscribe before Connect = %v, want ErrNotConnected", err)
 	}
 }
+
+// TestResilientClientReconnectLoopExits pins both done-driven exits of
+// reconnectLoop deterministically. Reached through watch(), which exit runs
+// depends on where Close lands relative to the dial and the backoff sleep —
+// a race that made statement coverage flap between runs under load.
+func TestResilientClientReconnectLoopExits(t *testing.T) {
+	// exit at the loop top: done already closed, so the select fires before
+	// any dial is attempted
+	rc := &ResilientClient{
+		addr:       "127.0.0.1:1",
+		opts:       &ResilientOptions{HandshakeTimeout: time.Millisecond},
+		subscribed: map[string]struct{}{},
+		cursors:    map[string]uint64{},
+		done:       make(chan struct{}),
+	}
+	close(rc.done)
+	if rc.reconnectLoop() {
+		t.Fatal("reconnectLoop on a closed client must return false")
+	}
+
+	// exit from the backoff sleep: the first dial fails fast against the
+	// closed port, and the 10s backoff guarantees Close lands inside the
+	// sleep — the done branch beats the timer deterministically
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	addr := listener.Addr().String()
+	_ = listener.Close() // connection refused from the very first dial on
+
+	rc2 := NewResilientClient(addr, nil, &ResilientOptions{
+		BackoffStart: 10 * time.Second,
+		BackoffMax:   10 * time.Second,
+	})
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		rc2.Close()
+	}()
+	if rc2.reconnectLoop() {
+		t.Fatal("reconnectLoop after Close must return false")
+	}
+}
