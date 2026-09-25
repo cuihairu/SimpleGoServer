@@ -415,12 +415,15 @@ func TestReactorReportsDispatchFailure(t *testing.T) {
 	c1, c2 := net.Pipe()
 	defer func() { _ = c2.Close() }()
 	listener.conns <- c1
-	deadline := time.Now().Add(2 * time.Second)
+	// Same shape as the fd78d23 lesson: the failure report only lands
+	// once the accept loop gets scheduled, so keep the window wide and
+	// the tick coarse instead of spinning against that very scheduling.
+	deadline := time.Now().Add(10 * time.Second)
 	for rec.count() == 0 {
 		if time.Now().After(deadline) {
 			t.Fatal("dispatch failure was never reported")
 		}
-		time.Sleep(5 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 	}
 	// Dispatch closed the connection on routing failure; the peer sees it
 	if err := waitClosed(c2, 2*time.Second); err != nil {

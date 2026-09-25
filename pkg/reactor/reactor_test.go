@@ -169,27 +169,6 @@ func TestReactorReapsIdleConnections(t *testing.T) {
 	t.Fatalf("idle connection was closed but its handler never exited (count=%d)", reactor.workers.TotalCount())
 }
 
-// waitCount polls until the worker table is seen holding exactly want
-// connections, failing after the budget. "Seen once" semantics on
-// purpose: a late-accepted probe connection (Dial succeeding does not
-// mean the server has accepted it — the probe can enter the table at
-// any moment during a test and reaps itself on EOF) makes the count
-// transiently overshoot, so a steady-state wait must tolerate it; and
-// in idle-reaping tests a long wait would fight the server's own idle
-// reaper, which is correct to fire once traffic stops.
-func waitCount(t *testing.T, reactor *Reactor, want int) {
-	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if got := reactor.workers.TotalCount(); got == want {
-			return
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	t.Fatalf("connection count = %d, want %d (not seen within 5s)",
-		reactor.workers.TotalCount(), want)
-}
-
 func TestReactorKeepsActiveConnectionsAlive(t *testing.T) {
 	reactor := startTestReactorWithIdle(t, 300*time.Millisecond)
 	waitListening(t, reactor)
