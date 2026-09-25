@@ -211,6 +211,7 @@ pkg/               核心抽象接口（balancer / executor / logger / options /
   event/           事件循环抽象
   channels/        NIO 风格的通道抽象（acceptor / selector）
   utils/           通用工具
+scripts/           覆盖率门禁（check-coverage.sh 及其测试）
 docs/              设计与数据文档（DESIGN.md、NOTES.md、Analysis.md、Proto.md、Benchmark.md）
 config.example.yml 服务端配置示例（键位与 cmd/server 的 viper 绑定互锁）
 ```
@@ -218,7 +219,11 @@ config.example.yml 服务端配置示例（键位与 cmd/server 的 viper 绑定
 测试结果（2026-09-24，本地与 CI 双 job 全绿）：
 
 - `go test ./... -race` 全部通过，含竞态检测与 goroutine 泄漏检测（goleak）。
-- 每个包的语句覆盖率 100%（含 `cmd/`、`internal/`、`examples/`）。
+- 每个包的语句覆盖率 100%（含 `cmd/`、`internal/`、`examples/`），由
+  `scripts/check-coverage.sh` 逐包门禁、CI 强制。纯接口包（`pkg/event`）
+  无语句，按定义跳过。
+- 覆盖率门禁自身有 12 个测试（`scripts/coverage_gate_test.go`）：门禁
+  "该失败时必须失败"比"全绿时通过"更重要，用合成 profile 精确构造缺口。
 - 模糊测试三目标累计约 320 万次执行零发现；性能基准数据见 [docs/Benchmark.md](docs/Benchmark.md)。
 - 长稳测试（连接 churn + 长连接稳态，采样 goroutine 与内存）无泄漏，
   数据见 [docs/Benchmark.md](docs/Benchmark.md) 长稳一节。
@@ -233,6 +238,11 @@ gofmt -l .
 
 # 全量测试：单元 + 端到端集成 + 竞态检测 + goroutine 泄漏检测
 go test ./... -race
+
+# 覆盖率门禁：逐包比对语句覆盖率，任一包低于阈值即失败（CI 同款）
+# 阈值默认 100，与上面"每个包 100%"的声明一致；--threshold 可放宽
+./scripts/check-coverage.sh
+./scripts/check-coverage.sh --threshold 95
 
 # 跑通完整示例：终端 1 启动服务端，终端 2 启动并发客户端
 go run ./examples/echo-server

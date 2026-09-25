@@ -439,6 +439,14 @@ HTTP 层用 IdleTimeout 回收空闲 keep-alive——同一问题的两个层次
 | 泄漏检测 | goleak 包级 TestMain | 任何后台 goroutine 泄漏（janitor/keepalive/watch）当场失败 |
 | 恶意输入 | fuzz 三目标 + 手工边界 | 超限长度、负长度、截断帧、非 envelope、分片交错、超限聚合 |
 | 长稳 | `SOAK=1` 门控 soak | churn + 稳态采样 goroutine/内存，断言单调性而非绝对值 |
+| 承诺防腐 | 逐包覆盖率门禁（CI 强制） | `scripts/check-coverage.sh`：任一包低于 100% 即失败，防止 100% 声明无声腐烂 |
+
+覆盖率本身也会腐烂：删掉一个测试或新增一个错误分支，`go test` 依然全绿，
+README 里那句 100% 就退化成无人验证的口头禅。所以 100% 由
+`scripts/check-coverage.sh` 逐包门禁、CI 在 `stable` leg 强制执行——
+**逐包而非仓库总和**，因为总和会让大包掩护小包（1000/1000 足以把 0/1
+抬成 99.90%），而 README 承诺的单位就是包。纯接口包无语句，按定义跳过；
+一个无法满足的门禁只会被删掉。原理与门禁自身的测试见 NOTES.md §16。
 
 两个值得在面试讲的细节：
 

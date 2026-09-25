@@ -43,3 +43,16 @@ jobs:
 
       - name: Test
         run: go test ./... -race -count=1
+
+      # The README promises 100% statement coverage per package. Without a
+      # gate that promise decays silently: delete a test or add an error
+      # branch and the suite above stays green. This runs the suite a second
+      # time to build a profile and fails if any package drops below the
+      # floor, so the claim is checked rather than asserted.
+      #
+      # Stable toolchain only, for the same reason as gosec above. The gate
+      # re-runs the tests, so it also costs a full suite pass -- acceptable
+      # because it only runs on one leg of the matrix.
+      - name: Coverage gate
+        if: matrix.go == 'stable'
+        run: ./scripts/check-coverage.sh --threshold 100
