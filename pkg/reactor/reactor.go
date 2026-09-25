@@ -24,7 +24,6 @@ import (
 // live one in main.
 
 type Reactor struct {
-	opts          pkg.Options
 	listener      net.Listener
 	workers       *WorkerGroup
 	cancelFunc    context.CancelFunc
@@ -75,7 +74,6 @@ func NewReactor(opts pkg.Options, logger *log.Logger, eventListener event.Listen
 		return nil, err
 	}
 	reactor := &Reactor{
-		opts:          opts,
 		listener:      listener,
 		workers:       group,
 		ctx:           ctx,
