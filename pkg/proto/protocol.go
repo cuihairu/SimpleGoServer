@@ -227,6 +227,22 @@ func (p *ProtocolHandler) reapExpiredSessions() {
 			delete(p.sessions, token)
 			if s.conn != nil {
 				delete(p.connTokens, s.conn)
+				// an expired session will never resume, so its transport must
+				// leave every member set it still occupies — the same swap a
+				// resume performs, done for removal instead of replacement.
+				// Without this, a client that subscribed and vanished stays
+				// in the subscription table until the next publish fails on
+				// the dead write; on a quiet topic that phantom subscriber
+				// would also keep the replay cache alive forever.
+				for topic := range s.topics {
+					if members, ok := p.subs[topic]; ok {
+						delete(members, s.conn)
+						if len(members) == 0 {
+							delete(p.subs, topic)
+						}
+					}
+					p.dropTopicCacheLocked(topic)
+				}
 			}
 		}
 	}

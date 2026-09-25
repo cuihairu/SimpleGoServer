@@ -344,6 +344,7 @@ WorkerGroup.active、lifecycleConn.closed、requireHello、client.version——
 | 32 | 出站支持五种消息形态 | 只收 []byte | 大帧可以 io.WriterTo 流式写，避免强制整缓冲 |
 | 33 | executor 通道故意不关闭 | Stop 时 close | close 后并发 Submit 变 panic；ctx 取消 + nil 守卫足够（async_executor.go:63-69 注释） |
 | 34 | future Do/Cancel 用 doneCh 关闭做一次性决议 | 标志位 | 关闭的 channel 是天然的广播一次性事件；Cancel 与 Do 竞态靠"已决议检查"保持第一个结果 |
+| 35 | janitor 作废会话时同步清成员集与补发缓存 | 只清 sessions/connTokens，成员集等下次 Publish 写失败再剔 | 过期会话永不再回来（与 resume 的换传输同构）；不清则静默 topic 上幽灵订阅者与被扣住的缓存无限期滞留 |
 
 ---
 
