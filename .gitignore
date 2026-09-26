@@ -14,6 +14,11 @@
 # Output of the go coverage tool, specifically when used with LiteIDE
 *.out
 
+# Ad-hoc coverage profiles (go test -coverprofile=reactor.cov ...) left
+# behind by local runs and audit sessions; the gate's own profile is
+# written to a temp path, never the repo root
+*.cov
+
 # Dependency directories (remove the comment below to include it)
 # vendor/
 
