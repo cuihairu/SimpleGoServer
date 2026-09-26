@@ -19,9 +19,11 @@
 # function below.
 #
 # Why no -race: the race detector cuts mutation throughput by about an order
-# of magnitude -- measured on this repo's FuzzDecodeStream at a 10s budget,
-# 130k execs without it against 11.9k with it, so the same wall clock buys a
-# tenth of the search. The division of labour is deliberate: the
+# of magnitude -- measured on this repo's FuzzDecodeStream at a fixed budget,
+# the with/without ratio lands around 10x across samples (absolute execs
+# counts are not reproducible: on a shared box two identical configurations
+# can differ by 20x -- only the ratio is usable), so the same wall clock buys
+# a tenth of the search. The division of labour is deliberate: the
 # `go test -race` step owns data races, this step owns panics and the
 # invariants asserted inside the targets.
 #
