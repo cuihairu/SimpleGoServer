@@ -44,6 +44,22 @@ jobs:
       - name: Test
         run: go test ./... -race -count=1
 
+      # Timing-sensitive suites fail with a different distribution than
+      # correctness bugs: one flip under scheduler contention, then green
+      # for many consecutive runs. The reactor package (accept loops,
+      # drain timeouts, idle reapers) is where both of this repo's real
+      # flakes lived: 182568f made the first one deterministic, and the
+      # second — a shutdown registration race — was reproduced via
+      # -cpu=1 -count=N and fixed by the registry gate. Repeating just
+      # that package gives the next latent timing bug five chances per
+      # push to surface here instead of in someone's local run (the
+      # practice is written up in docs/NOTES.md §17). Stable toolchain
+      # only: the repeat measures flake density, not toolchain
+      # compatibility.
+      - name: Flake tracking (reactor x5)
+        if: matrix.go == 'stable'
+        run: go test ./pkg/reactor/ -race -count=5
+
       # The README promises 100% statement coverage per package. Without a
       # gate that promise decays silently: delete a test or add an error
       # branch and the suite above stays green. This runs the suite a second

@@ -206,6 +206,33 @@ func TestConnectionRegistryLenAndCloseAll(t *testing.T) {
 	}
 }
 
+// TestConnectionRegistryRejectsAddsAfterCloseAll pins the registration
+// gate: once the shutdown sweep has run, Add must refuse new connections,
+// because a refused-and-untracked conn is one the rejecting worker closes
+// itself, while a tracked one would sit in a registry nobody will ever
+// sweep again.
+func TestConnectionRegistryRejectsAddsAfterCloseAll(t *testing.T) {
+	reg := NewConnectionRegistry()
+	kept, peer := net.Pipe()
+	defer func() { _ = kept.Close(); _ = peer.Close() }()
+	if !reg.Add(kept) {
+		t.Fatal("Add before CloseAll must be accepted")
+	}
+
+	if closed := reg.CloseAll(); closed != 1 {
+		t.Fatalf("CloseAll() = %d, want 1", closed)
+	}
+
+	late, latePeer := net.Pipe()
+	defer func() { _ = late.Close(); _ = latePeer.Close() }()
+	if reg.Add(late) {
+		t.Fatal("Add after CloseAll must be rejected: shutdown will never sweep it")
+	}
+	if reg.Len() != 0 {
+		t.Fatalf("Len() = %d after a rejected Add, want 0", reg.Len())
+	}
+}
+
 // stuckAddr satisfies net.Addr for the stuck connection below.
 type stuckAddr struct{}
 

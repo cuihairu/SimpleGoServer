@@ -205,7 +205,20 @@ func (w *Worker) Run() {
 			// drain count and to Registry().CloseAll, so shutdown never
 			// observes three different stories about one connection
 			lc := &lifecycleConn{Conn: c}
-			w.registry.Add(lc)
+			if !w.registry.Add(lc) {
+				// shutdown's CloseAll already swept the registry, so it
+				// will never see this connection: nobody else would ever
+				// close it, and a handler spawned here would park in Read
+				// on it forever (AwaitDone then times out and the fd
+				// leaks). Closing it is this worker's job — along with
+				// anything still queued behind it. The select above can
+				// pick this arm even with ctx already cancelled, so the
+				// rejection is the only thing standing between a conn
+				// accepted mid-shutdown and a leaked handler.
+				_ = c.Close()
+				w.closePending()
+				return
+			}
 			w.group.handlerStarted()
 			w.count.Add(1)
 			go w.handleConnection(lc)

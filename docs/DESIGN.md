@@ -72,8 +72,10 @@ net.Listen(url 解析出的 scheme://host)                 reactor.go:60
             └─ worker.AddConn(conn)
                  └─ newCh <- conn          (cap=100，满则 accept 阻塞 = 背压)
 worker loop (每 worker 一个 goroutine, 可 LockOSThread)   worker.go:194
-  └─ 收到 conn：registry.Add + handlerStarted + count++   ← 三件事在 loop 上做，
-       │                                                    而不是在 handler goroutine
+  └─ 收到 conn：registry.Add
+       │    ├─ 接受 → handlerStarted + count++   ← 三件事在 loop 上做，
+       │    │                                      而不是在 handler goroutine
+       │    └─ 拒绝（CloseAll 已清扫）→ 自关 + closePending + return（注册闸门，§1.5）
        └─ go handleConnection(lc)          (每连接一个 goroutine)
             ├─ NewPipeline + pipelineInitializer          worker.go:258
             ├─ pipeline.FireActive()
@@ -98,7 +100,13 @@ defer 清理（顺序固定）：Close → registry.Remove → FireInactive → 
    drain 轮询（TotalCount）与 `Registry.CloseAll` 三个观察者必须看到同一
    份连接账本——若在 handler goroutine 里注册，关闭路径可能观察到
    "active 有它、registry 没它"的三种说法打架。备选"handler 里注册"少一次
-   loop 交接，但把关闭正确性押在运气上。
+   loop 交接，但把关闭正确性押在运气上。但"在 loop 上做"只保证注册点
+   唯一，不保证注册与清扫的先后——`newCh` 里排队中的连接对三者皆不可见，
+   select 双臂就绪（conn 与 ctx.Done）掷币选中 conn 臂时，注册会落在
+   CloseAll 之后，连接从此无人可关（实测由 `-cpu=1` 复现，见 NOTES §17）。
+   所以注册点唯一还不够，还需要注册**闸门**：`Add` 与 `CloseAll` 同锁
+   串行化，清扫后 `Add` 返回拒绝，worker 自行关连接且不启动 handler
+   （取舍 #36）。
 2. **`newCh` 容量 100、满则阻塞 accept**（worker.go:163 注释）。这是结构性
    背压：worker 处理不过来时，压力沿 Dispatch → accept 循环回传，accept
    停下，内核 backlog 接管，客户端看到连接变慢而不是服务端 OOM。备选
@@ -172,7 +180,9 @@ topicCache map[topic][]cachedPublish          // 补发缓存：topic → 已编
   的 `Add` 与 `Wait` 并发是未定义行为；原子计数 + 10ms 轮询没有这条规则，
   且 `AwaitDone` 只在关闭时跑一次，轮询成本可忽略。
 - **`ConnectionRegistry` 是关闭能力的地基**：能枚举、能 `CloseAll`，才能把
-  "排空→强关"分成两段（见 1.5）。`CloseAll` 之后换新 map，剩余条目清零。
+  "排空→强关"分成两段（见 1.5）。`CloseAll` 之后换新 map，剩余条目清零，
+  并落 `closed` 闸门——此后 `Add` 返回 false，把"注册晚于清扫"的窗口
+  压成确定性的拒绝（见 1.5 与决策 #36）。
 - **Worker 同时实现 `Count()`（连接数）与 `Load()`（负载值）**：前者是
   `CountBackend` 契约（最少连接策略用），后者是 `LoadAware` 契约（自适应
   策略用），两个策略族共用同一个数据源。`SetCount` 故意是空实现——活跃
@@ -293,13 +303,20 @@ WorkerGroup.active、lifecycleConn.closed、requireHello、client.version——
 ```text
 1. stopping=true + listener.Close()      停止接收（accept 循环见 ErrClosed 静默退出）
 2. drain：轮询 TotalCount==0，上限 10s   给在途连接自然结束的机会
-3. Registry.CloseAll()                   强关残余 → 阻塞在 Read 的 goroutine 全部醒来
+3. Registry.CloseAll()                   强关残余 → 阻塞在 Read 的 goroutine 全部醒来；
+                                         落 closed 闸门，此后 Add 一律被拒
 4. cancel + workers.Stop + AwaitDone(5s) 停 worker 循环，等 handler 返回
 5. OnShutdown                             通知观察者
 ```
 
 - `stopOnce` 保证重复调用无害；第 4 步超时会**dump 全部 goroutine 栈**
   （reactor.go:199-202）——handler 卡死是泄漏，操作者需要看到卡在哪。
+- **第 3 步与 worker 注册的竞态由闸门闭环**：`newCh` 里排队的连接对 drain
+  与 CloseAll 皆不可见，worker 之后再取出注册，就是一条"清扫过后的漏网
+  连接"——handler 停在无人会关的 Read 上，AwaitDone 必超时。闸门把
+  `Add` 与 `CloseAll` 压进同一把锁，时序只剩两种且都安全：Add 在前 →
+  CloseAll 必关它；CloseAll 在前 → Add 被拒，worker 自关且不启动
+  handler。没有第三种时序，AwaitDone 的 5s 等待不再可能白付。
 - 返回值语义：非 nil ⟺ 有 handler 活过了第 4 步。备选"总是返回 nil"——
   泄漏是不可沉默的故障。
 - 对比题二的 `srv.Shutdown`：同样的"停收 → 排空 → 兜底强关"骨架，net/http
@@ -345,6 +362,7 @@ WorkerGroup.active、lifecycleConn.closed、requireHello、client.version——
 | 33 | executor 通道故意不关闭 | Stop 时 close | close 后并发 Submit 变 panic；ctx 取消 + nil 守卫足够（async_executor.go:63-69 注释） |
 | 34 | future Do/Cancel 用 doneCh 关闭做一次性决议 | 标志位 | 关闭的 channel 是天然的广播一次性事件；Cancel 与 Do 竞态靠"已决议检查"保持第一个结果 |
 | 35 | janitor 作废会话时同步清成员集与补发缓存 | 只清 sessions/connTokens，成员集等下次 Publish 写失败再剔 | 过期会话永不再回来（与 resume 的换传输同构）；不清则静默 topic 上幽灵订阅者与被扣住的缓存无限期滞留 |
+| 36 | 注册闸门：`Add` 返回 bool，`CloseAll` 落锁后拒绝新注册 | ① 关闭后再重扫一遍 registry；② 把 cancel 提到 CloseAll 之前 | ① 重扫要靠 AwaitDone 超时才触发，5s 等待已白付且报错依旧；② 提前 cancel 并不消除窗口——注册与清扫仍是无同步点的两个操作，worker 完全可以在 cancel 后、CloseAll 后才注册（`-cpu=1` 实测复现）。同锁串行化才有 happens-before：拒绝→worker 自关，接受→CloseAll 必关，别无第三种时序（NOTES §17） |
 
 ---
 

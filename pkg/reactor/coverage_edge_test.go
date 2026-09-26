@@ -291,6 +291,52 @@ func lcClosed(t *testing.T, peer net.Conn) bool {
 	return err != nil
 }
 
+// TestWorkerRunClosesConnReceivedAfterCloseAll pins the rejection path of
+// the worker loop against the shutdown registration race. The interleaving
+// that once leaked a handler (observed as a 5s AwaitDone timeout under
+// -cpu=1) ran: a conn was queued in newCh, shutdown's CloseAll swept an
+// empty registry, and only afterwards did the worker receive the conn,
+// register it into the abandoned registry and spawn a handler that parked
+// in Read on a conn nobody would ever close.
+//
+// The registry gate turns that arm into a close. The ordering here is
+// forced, not raced: the sweep happens before Run starts, so the select
+// has only one ready arm (newCh) and must take the rejection branch no
+// matter how the scheduler feels today.
+func TestWorkerRunClosesConnReceivedAfterCloseAll(t *testing.T) {
+	group := &WorkerGroup{eventListener: nopEventListener{}, registry: NewConnectionRegistry()}
+	w := NewWorker(context.Background(), "w", nopEventListener{}, nil, false, 0, group.registry, group)
+	if closed := group.registry.CloseAll(); closed != 0 {
+		t.Fatalf("CloseAll() = %d on a fresh registry, want 0", closed)
+	}
+
+	c1, c2 := net.Pipe()
+	defer func() { _ = c2.Close() }()
+	if err := w.AddConn(c1); err != nil {
+		t.Fatalf("AddConn(): %v", err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		w.Run()
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return after rejecting the post-sweep connection")
+	}
+	if !lcClosed(t, c2) {
+		t.Fatal("a connection received after CloseAll must be closed, not parked")
+	}
+	if w.count.Load() != 0 {
+		t.Fatalf("count = %d, a rejected connection must not be counted", w.count.Load())
+	}
+	if group.active.Load() != 0 {
+		t.Fatalf("active = %d, a rejected connection must not start a handler", group.active.Load())
+	}
+}
+
 // ---- connection handler -------------------------------------------------
 
 func TestHandleConnectionInitializerErrorPanics(t *testing.T) {
