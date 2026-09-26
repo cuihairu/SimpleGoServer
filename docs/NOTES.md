@@ -491,10 +491,10 @@ README 的承诺需要的是**可复现的一条命令**。*覆盖率门禁和�
 
 **实录：一次完整的 flake 侦破**（2026-09-26，方法论的第 1 步如何落地）：
 
-- **现场**：全量 `-race` 跑 reactor 失败一次（14.9s，正常 11s），随后 8 轮（单包×5、全量×3）及 20× CPU 压力下 3 轮全绿。第一次的失败详情被 `tail -20` 截掉了——**教训一：追 flake 时必须留全量日志，截断输出等于销毁唯一现场**。
+- **现场**：全量 `-race` 跑 reactor 失败一次（14.9s，正常 11s），随后 8 轮（单包×5、全量×3）及 20× CPU 压力下 3 轮全绿。第一次的失败详情被 `tail -20` 截掉了——**教训一：追 flake 时必须留全量日志，截断输出等于销毁唯一现场**。修复推送前的最后一次 CI（2 核 runner）也独立命中了它：同一个测试、同样的 "did not exit within 5s"、同样的 5.01s 签名——2 核 runner 的窗口比 16 核本地更宽，这不是本地噪声，是随等待机的真缺陷；而修复提交的 CI（含新 ×5 步骤）全绿，即修复在 2 核环境下的直接验证。
 - **激发**：`go test -race -count=3 -cpu=1,2,4` 复现，`TestReactorGracefulShutdownClosesLiveConnections` 报 "connection handlers did not exit within 5s"，耗时恰 5.01s。**`-cpu=1` 是最锋利的激发器**：P=1 时 goroutine 的推进完全依赖调度点，正常负载下微秒级的窗口被拉宽数量级——这是刻意改变系统形态来放大交错，与 CI 里"等密度说话"的重复是互补的两种手段。
 - **读数**：三个数字自洽地锁死时序——总耗时 5.01s ≈ 0ms drain + 5000ms AwaitDone，说明 drain 瞬间通过（count==0）；失败实例日志**没有一行 force-closed**，说明强关时 registry 是空的；goroutine dump 里创建 handler 的 Worker.Run 已不在栈上，而 handler 本体停在 `Decode→ReadFull` 的帧头读（IO wait）。拼起来：**连接在 newCh 里排队时对 drain 和 CloseAll 均不可见，worker 之后才取出注册——一条"清扫过后的漏网连接"，handler 停在无人会关的 Read 上**。中间还有一次 select 双臂就绪掷币（conn 与 ctx.Done 同时就绪），但根治它靠的是消灭窗口本身。
-- **修复**：注册闸门（`registry.go`）——`Add` 与 `CloseAll` 同锁串行化并返回 bool，`CloseAll` 落 `closed` 闸门；worker 收到拒绝就自关连接且不启动 handler。互斥锁给出 happens-before，时序只剩两种且都安全：**Add 在前 → CloseAll 必关它；CloseAll 在前 → Add 被拒、worker 自关**，没有第三种。回归测试（`TestWorkerRunClosesConnReceivedAfterCloseAll`）把"清扫先于 Run"构造出来，让拒绝分支不依赖调度器；修复后 `-cpu=1 -count=8` 全绿。
+- **修复**：注册闸门（`registry.go`）——`Add` 与 `CloseAll` 同锁串行化并返回 bool，`CloseAll` 落 `closed` 闸门；worker 收到拒绝就自关连接且不启动 handler。互斥锁给出 happens-before，时序只剩两种且都安全：**Add 在前 → CloseAll 必关它；CloseAll 在前 → Add 被拒、worker 自关**，没有第三种。回归测试（`TestWorkerRunClosesConnReceivedAfterCloseAll`）把"清扫先于 Run"构造出来，让拒绝分支不依赖调度器；修复后 `-cpu=1 -count=8` 全绿，`SOAK=1` 长稳（60s、11176 条连接 churn、`-race`）goroutine 回到基线、零泄漏报告。
 - **教训二：goroutine dump 是案发现场本身**。错误信息只说"有 handler 没退出"，dump 直接指出它停在哪个 Read、由哪个已退出的 goroutine 创建——没有它，三种假设（close 无效？注册缺失？双臂掷币？）无从裁决。
 
 **本仓落点**：CI 的 `Flake tracking (reactor x5)` 步骤（`.github/workflows/ci.yml`，stable 腿）。它不替代 `-race -count=1` 的全量正确性门——重复步骤的产出不是"更多正确性证据"，是**flake 密度的时间序列**：如果某次提交让 p 从 10⁻⁴ 涨到 10⁻³，count=1 的全量门大概率无感，而每周几十次推送 × 5 次重复会让它在统计上现形。
