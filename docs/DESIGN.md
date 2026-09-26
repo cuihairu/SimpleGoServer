@@ -455,7 +455,7 @@ HTTP 层用 IdleTimeout 回收空闲 keep-alive——同一问题的两个层次
 | 故障注入 | 桩注入 | failingStore、熵源失败、写失败连接 |
 | 并发靶场 | `-race` + 并发压测 | store 并发读写、客户端并发 Call |
 | 泄漏检测 | goleak 包级 TestMain | 任何后台 goroutine 泄漏（janitor/keepalive/watch）当场失败 |
-| 恶意输入 | fuzz 三目标 + 手工边界 | 超限长度、负长度、截断帧、非 envelope、分片交错、超限聚合 |
+| 恶意输入 | fuzz 三目标 + 手工边界 + CI 挖掘门禁 | 超限长度、负长度、截断帧、非 envelope、分片交错、超限聚合；`scripts/fuzz-smoke.sh` 每次推送按固定预算变异，崩了即失败并落盘语料 |
 | 长稳 | `SOAK=1` 门控 soak | churn + 稳态采样 goroutine/内存，断言单调性而非绝对值 |
 | 承诺防腐 | 逐包覆盖率门禁（CI 强制） | `scripts/check-coverage.sh`：任一包低于 100% 即失败，防止 100% 声明无声腐烂 |
 

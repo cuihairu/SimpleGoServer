@@ -34,35 +34,72 @@ func fuzzScript(t *testing.T) string {
 	return filepath.Join(filepath.Dir(self), "fuzz-smoke.sh")
 }
 
-// stubGo installs a fake `go` first on PATH. The stub appends every argv it
-// receives to a log file, one invocation per line group, and exits 1 for any
-// invocation whose argv mentions a target named in failOn (so a test can
-// crash exactly one target and watch what the script does with the rest).
+// stubGo installs a fake `go` first on PATH. It emulates the three shapes
+// the gate invokes:
+//
+//	go list ./...                            -> FUZZ_STUB_PKGS (one per line)
+//	go test -list 'Fuzz.*' <pkg>             -> targets of <pkg> per
+//	                                           FUZZ_STUB_TARGETS ("pkg<TAB>target")
+//	go test <pkg> -run '^$' -fuzz ... ...    -> a fuzz run
+//
+// The stub appends every argv it receives to a log file, one invocation per
+// line group, and exits 1 for any fuzz run whose argv mentions a target
+// named in failOn (so a test can crash exactly one target and watch what the
+// script does with the rest).
 //
 // The log is what lets a test assert the *shape* of the command -- that
-// -fuzztime and -run are wired through, and, more importantly, that -race is
-// absent, which is a documented design decision rather than an accident.
+// -fuzztime and -run are wired through, that each target is fuzzed in its
+// own package, and, more importantly, that -race is absent, which is a
+// documented design decision rather than an accident.
 func stubGo(t *testing.T, logPath, failOn string) {
 	t.Helper()
 	dir := t.TempDir()
+	// The package is always the final argument in both shapes above, so the
+	// stub can attribute a -list invocation to a package without a real
+	// argument parser.
 	stub := "#!/usr/bin/env bash\n" +
 		"{\n" +
 		"  printf 'INVOCATION\\n'\n" +
 		"  printf '%s\\n' \"$@\"\n" +
 		"} >> \"$FUZZ_STUB_LOG\"\n" +
+		"if [ \"$1\" = list ]; then printf '%s\\n' \"$FUZZ_STUB_PKGS\"; exit 0; fi\n" +
+		"pkg=\"${@: -1}\"\n" +
+		"saw_list=0\n" +
+		"for a in \"$@\"; do [ \"$a\" = -list ] && saw_list=1; done\n" +
+		"if [ \"$saw_list\" -eq 1 ]; then\n" +
+		"  while IFS=\"$(printf '\\t')\" read -r p t; do\n" +
+		"    [ \"$p\" = \"$pkg\" ] && printf '%s\\n' \"$t\"\n" +
+		"  done <<< \"$FUZZ_STUB_TARGETS\"\n" +
+		"  printf 'ok  %s 0.05s\\n' \"$pkg\"\n" +
+		"  exit 0\n" +
+		"fi\n" +
 		"if [ -n \"$FUZZ_STUB_FAIL\" ]; then\n" +
 		"  for a in \"$@\"; do\n" +
 		"    if [ \"$a\" = \"$FUZZ_STUB_FAIL\" ]; then exit 1; fi\n" +
 		"  done\n" +
 		"fi\n" +
-		"echo 'ok  github.com/cuihairu/simplegoserver/pkg/proto 5.1s'\n"
+		"echo \"ok  $pkg 5.1s\"\n"
 	if err := os.WriteFile(filepath.Join(dir, "go"), []byte(stub), 0o700); err != nil {
 		t.Fatalf("write stub: %v", err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("FUZZ_STUB_LOG", logPath)
 	t.Setenv("FUZZ_STUB_FAIL", failOn)
+	t.Setenv("FUZZ_STUB_PKGS", strings.Join(stubPackages, "\n"))
+	t.Setenv("FUZZ_STUB_TARGETS", strings.Join(stubTargetLines, "\n"))
 }
+
+// The stubbed world: two packages, three targets between them. Two packages
+// rather than one so a test can catch an attribute-to-the-wrong-package bug,
+// which a single-package world cannot express.
+var (
+	stubPackages    = []string{"./pkg/proto", "./pkg/codec"}
+	stubTargetLines = []string{
+		"./pkg/proto\tFuzzDecodeHeader",
+		"./pkg/proto\tFuzzDecodeStream",
+		"./pkg/codec\tFuzzFrameRoundTrip",
+	}
+)
 
 // runFuzz executes the gate with bash and reports exit code plus output.
 // Invoked through bash explicitly so a lost mode bit shows up as its own
@@ -190,6 +227,16 @@ func TestFuzzSmokeBuildsTheIntendedCommand(t *testing.T) {
 	if !strings.Contains(log, "-fuzz") || !strings.Contains(log, "^FuzzDecodeHeader$") {
 		t.Errorf("each target must be fuzzed under its own anchored name\n%s", log)
 	}
+	// Discovery is per package, so the run must be too: a target found in
+	// one package and fuzzed in another is a package-level lie -- it either
+	// "passes" against a package that has no such target, or crashes against
+	// one that does.
+	for _, want := range []string{"./pkg/proto\n-run\n^$\n-fuzz\n^FuzzDecodeHeader$", "./pkg/codec\n-run\n^$\n-fuzz\n^FuzzFrameRoundTrip$"} {
+		if !strings.Contains(log, want) {
+			t.Errorf("target was not fuzzed in its own package; wanted %s\n%s",
+				strings.ReplaceAll(want, "\n", " "), log)
+		}
+	}
 	if strings.Contains(log, "-race") {
 		t.Errorf("the fuzz budget must not be spent under the race detector\n%s", log)
 	}
@@ -218,103 +265,149 @@ func TestFuzzSmokeDefaultBudget(t *testing.T) {
 	}
 }
 
-// Discovery must see targets the moment they exist, and must not invent
-// targets that the toolchain would refuse to run. Both halves matter: a
-// hardcoded CI list rots the moment someone forgets it, and a too-greedy
-// pattern produces a target name that cannot be fuzzed.
+// fixtureRepo writes a throwaway module plus a copy of the gate, and returns
+// the path to that copy.
 //
-// The fixture is a throwaway repo (the script derives its root from its own
-// location), which also proves the gate works from any directory.
-func TestFuzzSmokeDiscoversRealTargetsOnly(t *testing.T) {
+// The gate is *copied* rather than invoked in place because it derives its
+// root from its own location -- only a copy inside the fixture makes it
+// enumerate the fixture. That is deliberate: it also proves the gate works
+// from a foreign tree, not just from the repo it grew up in.
+func fixtureRepo(t *testing.T, files map[string]string) string {
+	t.Helper()
 	repo := t.TempDir()
-	pkgDir := filepath.Join(repo, "pkg", "codec")
-	if err := os.MkdirAll(pkgDir, 0o750); err != nil {
-		t.Fatal(err)
+	write := func(rel, body string, mode os.FileMode) {
+		path := filepath.Join(repo, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), mode); err != nil {
+			t.Fatal(err)
+		}
 	}
-	real := "package codec\n\n" +
-		"import \"testing\"\n\n" +
-		"func FuzzRealTarget(f *testing.F) { f.Fuzz(func(t *testing.T, b []byte) {}) }\n" +
-		// A decoy: fuzz-shaped name, wrong signature. The toolchain would
-		// not accept it as a target, so neither may the gate.
-		"func FuzzDecoyHelper(t *testing.T) {}\n"
-	if err := os.WriteFile(filepath.Join(pkgDir, "codec_test.go"), []byte(real), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	// A crash corpus under testdata/ mentions a target name too; it is
-	// already replayed by the plain `go test` seed run and must not be
-	// rediscovered as a source-level target.
-	corpus := filepath.Join(repo, "pkg", "codec", "testdata", "fuzz", "FuzzStale")
-	if err := os.MkdirAll(corpus, 0o750); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(corpus, "deadbeef"), []byte("go test fuzz v1\n[]byte{1}\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	scriptDir := filepath.Join(repo, "scripts")
-	if err := os.MkdirAll(scriptDir, 0o750); err != nil {
-		t.Fatal(err)
+	write("go.mod", "module example.com/fixture\n\ngo 1.22\n", 0o600)
+	for rel, body := range files {
+		write(rel, body, 0o600)
 	}
 	body, err := os.ReadFile(fuzzScript(t))
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("read gate: %v", err)
 	}
-	local := filepath.Join(scriptDir, "fuzz-smoke.sh")
-	if err := os.WriteFile(local, body, 0o750); err != nil {
-		t.Fatal(err)
-	}
+	write("scripts/fuzz-smoke.sh", string(body), 0o750)
+	return filepath.Join(repo, "scripts", "fuzz-smoke.sh")
+}
 
-	stubGo(t, filepath.Join(t.TempDir(), "log"), "")
-	code, out := runFuzz(t, local, "--list")
+// fuzzTarget is one legal fuzz target. The parameter *name* is carried
+// explicitly because that is the whole point of the discovery test below.
+type fuzzTarget struct{ name, param string }
+
+// fuzzFile writes a test file declaring each target under one package clause.
+func fuzzFile(pkg string, targets ...fuzzTarget) string {
+	var b strings.Builder
+	b.WriteString("package " + pkg + "\n\nimport \"testing\"\n")
+	for _, tgt := range targets {
+		b.WriteString("\nfunc " + tgt.name + "(" + tgt.param + " *testing.F) {\n\t" +
+			tgt.param + ".Fuzz(func(t *testing.T, b []byte) { _ = b })\n}\n")
+	}
+	return b.String()
+}
+
+// Discovery is the one thing a gate cannot get wrong quietly, so it is pinned
+// against the *real* toolchain rather than a stub: a stub can only prove the
+// script asks the question, never that the answer it acts on is right.
+//
+// The fixture carries the two shapes a source grep gets wrong, because both
+// were real false greens in an earlier version of this gate:
+//
+//   - FuzzOddParamName is a legal target whose parameter is not named f. The
+//     compiler constrains the parameter *type*, never its name, so a pattern
+//     that spells the name finds 1 target in 2 and the gate reports PASS.
+//   - FuzzInSubPackage is in a package below the root, which a walk of the
+//     root directory alone never reaches.
+//
+// Nothing here is exotic: both shapes are ordinary Go, and both were written
+// by accident before the gate's discovery mechanism was pinned down.
+func TestFuzzSmokeFindsEveryTargetTheToolchainCanRun(t *testing.T) {
+	script := fixtureRepo(t, map[string]string{
+		"pkg/codec/codec_test.go": fuzzFile("codec",
+			fuzzTarget{"FuzzRealTarget", "f"},
+			fuzzTarget{"FuzzOddParamName", "t"}),
+		"pkg/codec/sub/sub_test.go":           fuzzFile("sub", fuzzTarget{"FuzzInSubPackage", "z"}),
+		"pkg/codec/testdata/fuzz/FuzzStale/x": "go test fuzz v1\n[]byte{1}\n",
+	})
+
+	code, out := runFuzz(t, script, "--list")
 	if code != 0 {
 		t.Fatalf("--list exit = %d, want 0\n%s", code, out)
 	}
-	if !strings.Contains(out, "pkg/codec\tFuzzRealTarget") {
-		t.Errorf("the real target was not discovered\n%s", out)
+	for _, want := range []string{
+		"example.com/fixture/pkg/codec\tFuzzRealTarget",
+		"example.com/fixture/pkg/codec\tFuzzOddParamName",
+		"example.com/fixture/pkg/codec/sub\tFuzzInSubPackage",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("target the toolchain can run was not discovered: %s\n%s",
+				strings.ReplaceAll(want, "\t", " "), out)
+		}
 	}
-	if strings.Contains(out, "FuzzDecoyHelper") {
-		t.Errorf("a non-target with a fuzz-shaped name was discovered\n%s", out)
-	}
+	// A crash corpus names a target but is not one: the plain `go test` seed
+	// run already replays it, and re-deriving a target from it would hand
+	// `go test -fuzz` a target that does not exist.
 	if strings.Contains(out, "FuzzStale") {
 		t.Errorf("a crash corpus was rediscovered as a source target\n%s", out)
 	}
 }
 
+// A package that does not build cannot be enumerated, and "fewer targets" is
+// indistinguishable from "nothing to do" in a summary line -- so the gate has
+// to fail rather than shrug.
+//
+// The trigger is not synthetic: the compiler rejects any Fuzz-named function
+// that is not func FuzzX(*testing.F), so a Test-shaped helper that someone
+// renamed into the Fuzz prefix breaks its own package. (This is also why the
+// discovery test above has no decoy to filter -- such a decoy cannot exist in
+// a package that compiles.)
+func TestFuzzSmokeFailsLoudlyWhenAPackageDoesNotBuild(t *testing.T) {
+	script := fixtureRepo(t, map[string]string{
+		"pkg/codec/codec_test.go": "package codec\n\nimport \"testing\"\n\nfunc FuzzNotATarget(t *testing.T) {}\n",
+	})
+
+	code, out := runFuzz(t, script)
+	if code != 1 {
+		t.Fatalf("exit = %d, want 1 when a package cannot be enumerated\n%s", code, out)
+	}
+	if !strings.Contains(out, "discovery failed") {
+		t.Errorf("output does not say that discovery is what failed\n%s", out)
+	}
+	if strings.Contains(out, "PASS") {
+		t.Errorf("a partial target set was reported as a pass\n%s", out)
+	}
+}
+
 // A repo with no fuzz targets must fail, not pass. "0 targets, 0 crashes" is
 // the most dangerous green a gate like this can produce: it survives every
-// future commit while checking nothing. The fixture is again a throwaway repo
-// so the real one is unaffected.
+// future commit while checking nothing.
+//
+// Discovery legitimately invokes `go` -- asking the toolchain *is* the
+// mechanism -- so the assertion is not "go was never called" but "no fuzz
+// run was started".
 func TestFuzzSmokeFailsWhenNoTargetsExist(t *testing.T) {
-	repo := t.TempDir()
-	if err := os.WriteFile(filepath.Join(repo, "plain_test.go"),
-		[]byte("package plain\n\nimport \"testing\"\n\nfunc TestNothing(t *testing.T) {}\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	scriptDir := filepath.Join(repo, "scripts")
-	if err := os.MkdirAll(scriptDir, 0o750); err != nil {
-		t.Fatal(err)
-	}
-	body, err := os.ReadFile(fuzzScript(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	local := filepath.Join(scriptDir, "fuzz-smoke.sh")
-	if err := os.WriteFile(local, body, 0o750); err != nil {
-		t.Fatal(err)
-	}
+	logPath := filepath.Join(t.TempDir(), "log")
+	stubGo(t, logPath, "")
+	t.Setenv("FUZZ_STUB_TARGETS", "") // packages exist, targets do not
 
-	stubGo(t, filepath.Join(t.TempDir(), "log"), "")
-	code, out := runFuzz(t, local)
+	code, out := runFuzz(t, fuzzScript(t))
 	if code != 1 {
 		t.Fatalf("exit = %d, want 1 for a repo with no fuzz targets\n%s", code, out)
 	}
 	if !strings.Contains(out, "no fuzz targets found") {
 		t.Errorf("output does not explain why nothing was checked\n%s", out)
 	}
-	// It must not have invoked `go` at all: failing here is about the
-	// discovery, not about a target.
-	if _, err := os.Stat(os.Getenv("FUZZ_STUB_LOG")); err == nil {
-		t.Error("go was invoked despite there being no targets")
+	raw, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("discovery never consulted the toolchain: %v", err)
+	}
+	if strings.Contains(string(raw), "-fuzz\n") {
+		t.Errorf("a fuzz run was started despite there being no targets\n%s", raw)
 	}
 }
 
