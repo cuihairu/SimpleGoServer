@@ -158,6 +158,53 @@ func TestGatePassesWhenFullyCovered(t *testing.T) {
 	}
 }
 
+// The suite-mode run must carry -count=1, or the gate can certify a stale
+// profile. `go test` caches results, so a warm GOCACHE (CI restores one via
+// setup-go's default `cache: true`) turns this command into "(cached)" plus a
+// profile from the previous run -- green, and meaningless.
+//
+// --profile mode cannot observe this, since it never invokes `go test`, so the
+// assertion is made on the invocation itself: a stub `go` first on PATH records
+// its argv and writes a passing profile. The stub also proves the gate still
+// reaches `go test` at all, so the test cannot pass vacuously by the gate
+// skipping the run.
+func TestSuiteModeRunDisablesResultCache(t *testing.T) {
+	dir := t.TempDir()
+	argsPath := filepath.Join(dir, "argv")
+	stub := "#!/usr/bin/env bash\n" +
+		"printf '%s\\n' \"$@\" > \"$GATE_STUB_ARGS\"\n" +
+		"for a in \"$@\"; do\n" +
+		"  case \"$a\" in\n" +
+		"  -coverprofile=*) printf 'mode: atomic\\nexample.com/app/core/a.go:1.1,2.1 3 1\\n' > \"${a#-coverprofile=}\" ;;\n" +
+		"  esac\n" +
+		"done\n"
+	if err := os.WriteFile(filepath.Join(dir, "go"), []byte(stub), 0o700); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+
+	cmd := exec.Command("bash", scriptPath(t))
+	cmd.Env = append(os.Environ(),
+		"PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"GATE_STUB_ARGS="+argsPath,
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("gate failed with stubbed go: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "PASS") {
+		t.Fatalf("gate did not pass on the stub's profile\n%s", out)
+	}
+
+	raw, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatalf("stub `go` was never invoked (no argv recorded): %v", err)
+	}
+	if !strings.Contains(string(raw), "-count=1\n") {
+		t.Errorf("suite-mode `go test` must pass -count=1 to defeat the test "+
+			"result cache, argv was:\n%s", raw)
+	}
+}
+
 // A block that merely ran more than once is still fully covered. Pinned
 // because the profile format's all-or-nothing semantics make this the easiest
 // thing to misread when writing a gate.

@@ -72,3 +72,21 @@ jobs:
       - name: Coverage gate
         if: matrix.go == 'stable'
         run: ./scripts/check-coverage.sh --threshold 100
+
+      # The fuzz targets are the only thing here that hunts for input no
+      # human thought of, and the step above proves just the easy half: plain
+      # `go test` replays the seed corpus, it does not mutate. This gives each
+      # discovered target a fixed wall-clock budget; a crash fails the build
+      # and `go test` drops the offending input into testdata/fuzz/<Target>/,
+      # so committing that file turns the find into a permanent regression
+      # case.
+      #
+      # Targets are discovered from the source, not listed here, so a new
+      # Fuzz function is gated the moment it lands; a repo with no targets at
+      # all fails loudly rather than reporting "0 crashes". No -race by design
+      # (the detector cuts mutation throughput ~10x for the same budget; the
+      # Test step above already owns race detection). Stable toolchain only,
+      # for the same reason as the other gates.
+      - name: Fuzz smoke (20s per target)
+        if: matrix.go == 'stable'
+        run: ./scripts/fuzz-smoke.sh

@@ -8,8 +8,10 @@ import (
 	"testing"
 )
 
-// The fuzz targets below cost nothing in CI: plain `go test` runs only
-// their seed corpus. Point -fuzz at one of them to actually hunt.
+// The fuzz targets below cost nothing in a normal `go test`: only their seed
+// corpus is replayed. CI additionally runs scripts/fuzz-smoke.sh, which gives
+// every target it discovers a fixed mutation budget per push -- point -fuzz at
+// one of them to dig deeper locally.
 
 // FuzzDecodeHeader throws arbitrary bytes at the header parser: it may
 // reject anything, but it must never panic, never return a header

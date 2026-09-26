@@ -221,9 +221,12 @@ config.example.yml 服务端配置示例（键位与 cmd/server 的 viper 绑定
 - `go test ./... -race` 全部通过，含竞态检测与 goroutine 泄漏检测（goleak）。
 - 每个包的语句覆盖率 100%（含 `cmd/`、`internal/`、`examples/`），由
   `scripts/check-coverage.sh` 逐包门禁、CI 强制。纯接口包（`pkg/event`）
-  无语句，按定义跳过。
-- 覆盖率门禁自身有 12 个测试（`scripts/coverage_gate_test.go`）：门禁
-  "该失败时必须失败"比"全绿时通过"更重要，用合成 profile 精确构造缺口。
+  无语句，按定义跳过。门禁跑测试时带 `-count=1`：`go test` 结果进缓存，
+  setup-go 默认恢复 GOCACHE，命中时命令报 `(cached)`、一个测试都不跑就
+  复用上一次的 profile——门禁会用旧证据冒充新证据（详见 NOTES §16）。
+- 覆盖率门禁自身有 13 个测试（`scripts/coverage_gate_test.go`）：门禁
+  "该失败时必须失败"比"全绿时通过"更重要，用合成 profile 精确构造缺口；
+  另有一条用 PATH 上的假 `go` 记录 argv，钉住 `-count=1` 这个调用点契约。
 - 模糊测试三目标累计约 320 万次执行零发现；性能基准数据见 [docs/Benchmark.md](docs/Benchmark.md)。
 - 长稳测试（连接 churn + 长连接稳态，采样 goroutine 与内存）无泄漏，
   数据见 [docs/Benchmark.md](docs/Benchmark.md) 长稳一节。
@@ -251,8 +254,9 @@ go run ./examples/concurrent-client
 # 性能基准：帧编解码 + 真实 TCP 端到端吞吐 / 并发扩展 / 连接建立拆除
 go test ./pkg/proto ./pkg/reactor -bench . -benchmem
 
-# 模糊测试：普通 go test 只跑种子语料；-fuzz 实际挖掘（示例 30 秒）
-go test ./pkg/proto -run '^$' -fuzz FuzzDecodeStream -fuzztime 30s
+# 模糊测试：普通 go test 只跑种子语料；门禁脚本给每个靶固定预算（CI 同款）
+./scripts/fuzz-smoke.sh            # 20s/靶；--list 只列靶，--fuzztime 5m 深挖
+go test ./pkg/proto -run '^$' -fuzz FuzzDecodeStream -fuzztime 30s   # 单靶手工挖
 
 # 长稳测试（SOAK=1 门控，CI 默认跳过；SOAK_SECONDS 可调时长）
 SOAK=1 go test ./pkg/reactor -run TestSoak -race -timeout 15m

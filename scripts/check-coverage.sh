@@ -86,11 +86,17 @@ else
 	cd "$ROOT"
 	# -covermode=atomic keeps counts correct under -race; without it, a
 	# racy run can undercount and report a phantom gap.
+	#
+	# -count=1 is not redundant: `go test` caches results, and a warm
+	# GOCACHE (CI restores one via setup-go's default `cache: true`) makes
+	# this command report "(cached)" and reuse the *previous* profile --
+	# a coverage gate that certifies a stale profile. Same hole, same fix
+	# as the -count=1 on the race step.
 	echo "check-coverage: running tests to build a coverage profile..."
 	# Test failures are reported by the caller's own `go test` step; here
 	# we only need the profile, so don't let a failing suite mask a
 	# coverage verdict. Record it and keep going.
-	if ! go test "$PKGS" -covermode=atomic -coverprofile="$PROFILE" >/dev/null 2>&1; then
+	if ! go test "$PKGS" -count=1 -covermode=atomic -coverprofile="$PROFILE" >/dev/null 2>&1; then
 		echo "check-coverage: warning: 'go test' reported failures; gating the profile anyway" >&2
 	fi
 	[ -s "$PROFILE" ] || die "no coverage profile was produced"
