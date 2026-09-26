@@ -121,7 +121,10 @@ func (c *Client) HandshakeWith(session string, cursors map[string]uint64, timeou
 		_ = c.Close()
 		return nil, fmt.Errorf("proto: malformed handshake response: %w", err)
 	}
-	c.version.Store(int32(agreed.Version)) // #nosec G115 -- small positive protocol version from negotiation
+	// A hostile peer controls agreed.Version (it is plain JSON), so the
+	// narrowing can wrap; the blast radius is only the value echoed by
+	// NegotiatedVersion, never memory safety.
+	c.version.Store(int32(agreed.Version)) // #nosec G115 -- overflow would only skew NegotiatedVersion's report
 	return &HandshakeResult{
 		Version:  agreed.Version,
 		Features: agreed.Features,

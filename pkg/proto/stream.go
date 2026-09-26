@@ -71,7 +71,10 @@ func DecodeStreamed(r io.Reader) (*Frame, error) {
 				Header: FrameHeader{
 					FrameType: frameType,
 					StreamId:  streamId,
-					Length:    int32(len(buf)), // #nosec G115 -- buf is a decoded fragment, bounded by MaxFrameSize in Decode
+					// buf is the aggregate, not one fragment: it fits int32
+					// because the ErrStreamTooLarge check above caps it at
+					// MaxStreamSize (8 MiB), far below math.MaxInt32.
+					Length: int32(len(buf)), // #nosec G115
 				},
 				Payload: buf,
 			}, nil
