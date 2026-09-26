@@ -29,7 +29,8 @@ PROFILE=""
 PKGS="./..."
 
 usage() {
-	sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'
+	# lines 2-24: the header comment block; anything past it is code.
+	sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 die() {
