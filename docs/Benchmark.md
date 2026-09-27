@@ -367,11 +367,24 @@ byte loop，`json.go` 注释里留了这一条，免得后人重踩。
 `pkg/reactor/soak_test.go` 的 `TestSoakMemoryStability` 驱动两种负载形态，
 周期采样 `runtime.NumGoroutine` 与 `runtime.ReadMemStats`。断言只针对
 单调增长与最终回收，不针对绝对值（GC 时机与机器负载会让绝对值 flaky）。
-`SOAK=1` 门控，CI 默认跳过：
+`SOAK=1` 门控——每次推送的 CI 不跑它（它量的是时间维度，十分钟量级的门
+挤不进 push 预算，也会污染 push 门禁的 flake 密度序列），本地按需：
 
 ```bash
 SOAK=1 SOAK_SECONDS=180 go test ./pkg/reactor -run TestSoak -race -timeout 15m
 ```
+
+它另有**每周定时门禁**（`.github/workflows/soak.yml`，`workflow_dispatch`
+可随时加跑），命令与上面同源、只差时长与 `-v`（无 `-race`：竞态检测已由
+ci.yml 的 Test 与 Flake tracking 步骤在每次推送时覆盖，此处再加会改变被测
+分配形态、并把 churn 段压成在测 race 检测器）：
+
+```bash
+SOAK=1 SOAK_SECONDS=600 go test ./pkg/reactor -run TestSoak -timeout 15m -v
+```
+
+全量日志落 artifact、样例行进 job summary，密度口径与逐周读数记在
+NOTES.md §17。
 
 实测（2026-09-24，16 核本机，`-race`，90 秒档）：
 

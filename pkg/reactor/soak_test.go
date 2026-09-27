@@ -132,6 +132,7 @@ func TestSoakMemoryStability(t *testing.T) {
 	// scheduler noise.
 	if steadyFirst > 0 && steadyLast > steadyFirst+steadyFirst/10+5 {
 		t.Errorf("goroutines grew %d -> %d during the steady stage", steadyFirst, steadyLast)
+		dumpGoroutines(t)
 	}
 
 	// Tear the clients down explicitly — a deferred close would run
@@ -151,4 +152,26 @@ func TestSoakMemoryStability(t *testing.T) {
 	}
 	t.Errorf("goroutines did not return to the quiescent watermark: quiescent=%d now=%d",
 		quiescent, runtime.NumGoroutine())
+	dumpGoroutines(t)
+}
+
+// dumpGoroutines prints every live goroutine's stack at the failure site.
+//
+// A soak failure says only "something is still alive"; docs/NOTES.md §17's
+// 教训二 is that the counts cannot decide between the plausible causes (a
+// handler parked on a read nobody will close, a janitor that never got its
+// signal, a client read loop waiting on a dead peer) while the stacks can,
+// and a scheduled gate's log is the only scene available — the runner is gone
+// by the time anyone reads it. Called after every assertion has already
+// reported, so its own large buffer cannot perturb what the test measured.
+func dumpGoroutines(t *testing.T) {
+	buf := make([]byte, 1<<20)
+	for {
+		n := runtime.Stack(buf, true)
+		if n < len(buf) {
+			t.Logf("live goroutines at failure:\n%s", buf[:n])
+			return
+		}
+		buf = make([]byte, len(buf)*2)
+	}
 }
