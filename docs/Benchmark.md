@@ -156,6 +156,128 @@ go test ./pkg/reactor -run '^$' -bench StreamedCall -benchmem
      ~20 MB/s 为 proto 层固有形态，reactor 无真实放大，C' 残差
      观察点并入该结论。）
 
+## 帧对象池化 A/B（2026-09-27）
+
+对应 DESIGN §1.3 与决策 #37~#46：把 `Frame` 与 payload 缓冲按尺寸分级接入
+`sync.Pool`，释放点写死在 dispatch 返回后 / 分片 append 之后 / 编码缓冲写完
+之后。**采样窗口内本机不是空载**（14 核全部 95~100% 占用，负载来自与本仓
+无关的 rustc / cargo test / 另一条会话的基准，见下文「噪声底」），所以这一节
+按本文档一贯口径办：**分配数与 B/op 是结论，ns/op 只作方向性参考**。
+
+**采样协议**（两轮，互为交叉验证）：
+
+- **A 轮（结构指标）**：两侧交替、迭代数钉死（`-benchtime 2000x` / 大载荷
+  `30x`，`-count 3`）。迭代数固定意味着 setup 成本被摊薄，allocs/op 与
+  B/op 在任何负载下都稳定可比。
+- **B 轮（延迟参考）**：6 轮交替，**奇数轮 After 先跑、偶数轮 Before 先跑**，
+  抵消"谁先跑谁占便宜"的系统性偏差；每侧 12 个样本取 **min**（最少被抢占的
+  一次）。命令：
+  `go test ./pkg/proto -run '^$' -bench . -benchmem -count 2 -benchtime 300ms`
+  与 `go test ./pkg/reactor -run '^$' -bench . -benchmem -count 2 -benchtime 500ms`。
+
+Before 侧取 HEAD `e12fb9e` 的独立 worktree，与 After 侧同一台机器、同一段
+时间窗内交替执行。
+
+### 噪声底：用"两侧代码完全相同"的基准量出这把尺子
+
+`EncodeSmallFrame`、`EncodeLargeFrame`、`JSONEnvelopeString1MiB` 三条基准走
+的代码在池化前后**逐字节相同**（公开 `Encode` 未改），它们的差值就是纯粹的
+测量噪声：
+
+| 基准（两侧同码） | Before min | After min | 差值 |
+| --- | --- | --- | --- |
+| BenchmarkEncodeSmallFrame | 54.5 ns | 51.2 ns | -6.1% |
+| BenchmarkEncodeLargeFrame | 22.3 µs | 24.3 µs | +9.1% |
+| BenchmarkJSONEnvelopeString1MiB | 4.19 ms | 3.58 ms | -14.5% |
+
+即**本窗口的噪声底约 ±10~15%**。下文任何落在这个带子里的差值都不作结论。
+
+### 单元级（`pkg/proto`）
+
+| 基准 | 池化前 | 池化后 | ns（min，B 轮） |
+| --- | --- | --- | --- |
+| EncodeSmallFrame（公开 `Encode`） | 1 alloc / 64 B | 1 alloc / 64 B | 54.5 → 51.2 ns（同码对照） |
+| **EncodeSmallFramePooled** | — | **0 alloc / 0 B** | — → 49.9 ns |
+| EncodeDecodeRoundTrip（公开 `Decode`） | 4 alloc / 128 B | **2 alloc / 112 B** | 202.5 → **124.6 ns（-38%）** |
+| **PooledDecodeRoundTrip** | — | **0 alloc / 0 B** | — → 117.7 ns |
+| EncodeLargeFrame | 1 alloc / 73728 B | 1 alloc / 73728 B | 22.3 → 24.3 µs（同码对照） |
+| JSONEnvelope | 15 alloc / 401 B | 15 alloc / **417 B** | 4.27 → 4.15 µs |
+| JSONEnvelopeString1MiB | 6~7 alloc / 1.00 MB | 6~7 alloc / 1.00 MB | 4.19 → 3.58 ms（同码对照） |
+
+三条结论：
+
+1. **公开解码路径 -38%，超出噪声底一个量级，机制清楚**：帧头改为解析进帧
+   自己的内联 `scratch [HeaderSize]byte`（`parseHeaderInto`），省掉旧路径的
+   `make([]byte, HeaderSize)` 与中间 `*FrameHeader` 两次分配——4 → 2 次
+   分配、128 → 112 B，对应 202.5 → 124.6 ns（两次独立采样分别给出 -24.9%
+   与 -38.5%，方向一致）。
+2. **池化路径稳态 0 分配**，但**延迟与公开路径基本持平**（编码 49.9 vs
+   51.2 ns，解码 117.7 vs 124.6 ns，都在噪声底内）。这是 `sync.Pool` 的
+   本质：Get/Put 的固定开销大致抵掉一次 malloc，**换来的不是延迟而是分配
+   数与 GC 压力**（NOTES §8 的"小对象不要池化"经验在 64 B 档得到印证：
+   收益为零也不为负，1 MiB 档才见真金白银）。
+3. **JSON envelope 每次多 16 B**，唯一一处真实代价：`Frame` 结构体从 40 B
+   涨到 64 B（新增 `payloadCell` 与 `scratch`），size class 从 48 跳到 64。
+   字段顺序是为此专门排过的——同样的字段接在 `Payload` 后面实测 72 B，
+   会落到 80 类的 size class，白扔 16 B。端到端每次请求解码一帧，这 16 B
+   已被 -266 B/op 的降幅完全覆盖。
+
+两条新基准是池化路径的专用形态（`decodeFrame` / `encodeFrameBuffered` +
+`release`），公开 API 保持精确分配，理由见 DESIGN §1.3 的所有权表。
+
+### 端到端（`pkg/reactor`，真实 TCP + 完整协议栈）
+
+A 轮（迭代数钉死）的结构指标与 B 轮的延迟参考并列；两轮的分配数完全一致。
+
+| 基准 | 分配/次（前 → 后） | 内存/次（前 → 后） | ns（min，B 轮） |
+| --- | --- | --- | --- |
+| EchoThroughput | 42 → **32** (-24%) | 1898 → **1632 B** (-14%) | 11.8 → 10.9 µs（噪声内） |
+| EchoClients clients=1 | 42 → **32** | 1896 → **1626 B** | 101.4 → 104.1 µs（噪声内） |
+| EchoClients clients=8 | 42 → **32** | 1936 → **1634 B** | 16.5 → 18.9 µs（噪声内） |
+| EchoClients clients=64 | 42 → **32** | 1907 → **1647 B** | 12.5 → 10.6 µs（噪声内） |
+| ConnChurn | 85 → **74** (-13%) | 4456 → **4296 B** | 314 → 323 µs（噪声内） |
+| StreamedCall size=1KiB | 43 → **33** (-23%) | 9688 → **6127 B** (-37%) | 142.9 → 122.6 µs（噪声内） |
+| StreamedCall size=1MiB | 85 → **77** | 12.00 → **10.57 MB** (-12%) | 15.8 → 13.8 ms（噪声内） |
+| StreamedCall size=4MiB | 125 → **100** (-20%) | 58.20 → **53.41 MB** (-8%) | 65.7 → 57.7 ms（噪声内） |
+
+**读法**：
+
+1. **分配数全线下降，无一条上升**——这是本次改造的无回归判据，也是本节
+   唯一能承重的结论。以 `EchoThroughput` 的 42 → 32 为例，`-memprofilerate=1`
+   的逐点差分给出精确分解（一次请求往返，四条路径各一份）：
+
+   | 路径 | 前 | 后 | 差 |
+   | --- | --- | --- | --- |
+   | 服务端入站解码 | 4（`Frame` + payload + 帧头 scratch + `*FrameHeader`） | **0** | -4 |
+   | 服务端出站编码 | 2（`[][]byte{buf}` 簿记 + 编码缓冲） | **0** | -2 |
+   | 客户端出站编码 | 2（同上） | **0** | -2 |
+   | 客户端入站解码 | 4 | **2**（`Frame` + payload） | -2 |
+   | 合计 | 42 | **32** | **-10** |
+
+   两条附带结论：客户端入站那 -2 **不是池化**（`Response.Data` 别名逃逸，
+   按设计不进池），而是帧头改为解析进帧自己的内联 `scratch`，省掉
+   `make([]byte, HeaderSize)` 与中间 `*FrameHeader`；出站那 -2 里有一半
+   也不是池化，而是 `encodedMessage` 把"一次编码返回两个平行切片"的簿记
+   彻底消掉（单缓冲形态零簿记分配）。**即 10 次里有 4 次来自簿记与帧头
+   解析的消除，只有 6 次来自池化本身。**
+2. **大消息的收益在字节数而非延迟**：1 MiB 档每次少分配 ~1.4 MB、4 MiB 档
+   少 ~4.8 MB——分片缓冲在 append 进聚合后立刻回池，下一个请求直接复用，
+   省掉的不只是分配，还有大块内存的**首次触碰 page fault 与内核清零**。
+   1 KiB 档另有 -3.5 KB/次（两条 1 KiB 载荷帧的 payload 与编码缓冲都命中
+   1 KiB 类）。但吞吐数字（1 MiB 15.8 → 13.8 ms）落在噪声底内，所以只能说
+   "分配形态变好了"，不能说"跑得更快了"。
+3. **ConnChurn 是降幅最小的一条**（-13%）：建连成本的大头是 accept、
+   goroutine 创建、pipeline 组装与 CLOSE 握手，池化管不到。
+4. **回滚安全性**：客户端入站、Publish 补发缓存仍是精确分配（DESIGN §1.3
+   表格），所以即便某个 handler 在池化路径上误留了 payload 别名，受影响的
+   也只有该 handler 自己的后续请求——pool_test.go 的别名复用 fuzz 靶
+   （`FuzzPooledDecodeReuse`）专门盯这条线。
+5. **延迟结论的边界**：本节所有端到端差值都在 ±10~15% 的噪声底内
+   （同码对照见上），因此**不能据此宣称吞吐或延迟改善**；能宣称的只有
+   "分配数与内存/次下降，且延迟无可测量的回归"。要给出延迟结论，需在空载
+   机器上按同一协议复采——这正是本文档 2026-09-25 那轮"空载终采"建立的
+   规矩。
+
 ## 解读
 
 1. **吞吐随客户端数近线性扩展**：1→8 客户端吞吐 ×10，8→64 再 ×5——
@@ -171,6 +293,10 @@ go test ./pkg/reactor -run '^$' -bench StreamedCall -benchmem
 4. **已知的优化方向**（对应 Analysis.md 优缺点）：每请求 52 次分配
    中约 19 次来自 JSON 反射；帧解码每帧分配 Frame+payload，可用
    `sync.Pool` 复用。基准已可复现，优化前后可用同一命令对比。
+   —— 第二项已于 2026-09-27 落地，实测见上文「帧对象池化 A/B」：端到端
+   每请求 42 → 32 次分配，公开解码路径 4 → 2 次且快 38%，池化路径
+   稳态 0 分配。**第一项（JSON 反射）仍是最大的单块成本**：15 次分配
+   全部来自 `encoding/json`，接口已隔离，换 Protobuf 可整体消掉。
 
 ## 长稳测试与内存泄漏曲线
 

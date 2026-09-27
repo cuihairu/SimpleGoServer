@@ -40,6 +40,67 @@ func BenchmarkEncodeDecodeRoundTrip(b *testing.B) {
 	}
 }
 
+// BenchmarkPooledDecodeRoundTrip is BenchmarkEncodeDecodeRoundTrip's pooled
+// twin: the same wire bytes through the same decode core, but with a pool
+// backend — the path the server codec actually runs. The plain pair above is
+// the public Decode that hands payload aliases to application code and
+// therefore cannot recycle; this one releases after every frame exactly as
+// FrameCodec does, since its dispatch is synchronous.
+//
+// The backend is private to the benchmark so the numbers describe a warm
+// pool and are not perturbed by other packages' traffic.
+func BenchmarkPooledDecodeRoundTrip(b *testing.B) {
+	frame, err := EncodeJSON(REQUEST, 1, "echo", map[string]string{"msg": "hello"})
+	if err != nil {
+		b.Fatal(err)
+	}
+	wire, err := Encode(frame)
+	if err != nil {
+		b.Fatal(err)
+	}
+	reader := bytes.NewReader(wire)
+	backend := &syncPoolBackend{}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		reader.Reset(wire)
+		f, err := decodeFrame(reader, backend)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if len(f.Payload) == 0 {
+			b.Fatal("decoded an empty payload")
+		}
+		f.release(backend)
+	}
+}
+
+// BenchmarkEncodeSmallFramePooled is BenchmarkEncodeSmallFrame's pooled twin:
+// the same frame encoded into a size-class buffer that is recycled right after
+// the write consumed it. Buffers/cells are handed to putPayloadArray through
+// one preallocated pair of slices, because the real callers release through
+// releaseBuffers on slices they built once per message — allocating those
+// inside the loop would charge the harness, not the code under test, for them.
+func BenchmarkEncodeSmallFramePooled(b *testing.B) {
+	frame, err := EncodeJSON(REQUEST, 1, "echo", map[string]string{"msg": "hello"})
+	if err != nil {
+		b.Fatal(err)
+	}
+	backend := &syncPoolBackend{}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		buf, cell, err := encodeFrameBuffered(backend, REQUEST, 1, frame.Payload, 0)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if len(buf) <= HeaderSize {
+			b.Fatal("encoded frame has no payload")
+		}
+		putPayloadArray(backend, buf, cell)
+	}
+}
+
 func BenchmarkEncodeLargeFrame(b *testing.B) {
 	payload := bytes.Repeat([]byte("x"), 64*1024)
 	frame := &Frame{

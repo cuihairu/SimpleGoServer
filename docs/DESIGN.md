@@ -142,6 +142,41 @@ Frame{ Header FrameHeader; Payload []byte }
 - **Flags 只定义了 bit0（FlagMore）**，其余位预留（压缩/加密/控制语义），
   与 HTTP/2 flags 的演进方式一致。
 
+#### 帧池：Frame 与 payload 的尺寸分级回收（`pkg/proto/pool.go`）
+
+```go
+payloadClasses = [...]int{256, 1<<10, 4<<10, 16<<10, 64<<10, 256<<10, 1<<20}
+syncPoolBackend{ frames sync.Pool; payloads [7]sync.Pool }   // 池里放 *[]byte cell
+```
+
+池化帧层之前必须先回答：**谁还持有 payload？** 零拷贝别名
+（`DecodeJSONMessage` 的 `Data` 别名 `frame.Payload`）与池回收（"用完
+归还"）表面上冲突，实际是一次所有权清点——每条路径的别名到底能活多久：
+
+| 路径 | 别名最终逃逸到 | 能回收吗 | 依据 |
+| --- | --- | --- | --- |
+| 服务端入站 | 逃不出 `ctx.HandleRead(frame)` 这一层 | ✅ 释放点 = dispatch 返回后 | 管线是同步方法调用链，`ExecutorHandler` 只被断言从不派发（NOTES §13） |
+| 客户端入站 | `Response.Data` 经 channel 交给应用代码 | ❌ 公开 `Decode`/`DecodeStreamed` 保持精确分配 | 逃出去的别名没有可追踪的归还时机 |
+| 出站编码缓冲 | 死在 `HeadHandler` 的同步 `conn.Write` | ✅ 写返回即回收 | 慢 socket 只会让本次写更久，不会让缓冲活得更久 |
+| `Publish` 补发缓存 | 存在 `topicCache` 里，要活到补发之后 | ❌ 保持精确分配 | 全仓唯一不走管线的编码点（protocol.go:642） |
+
+三条设计细节：
+
+- **按尺寸分级，不按精确长度**：每长度一个 freelist 需要无界簿记；分级把
+  每缓冲的浪费封在 4× 以内（均值 2×），换来 7 个池。回收时按 **cap** 路由
+  （取最大的 ≤ cap 的类）——一个 300 B 的缓冲仍能服务 256 B 类，不该因为
+  "当初是 300 B"就无处可去。
+- **cap 超过最大类（1 MiB）一律不回池**：`append` 扩容出来的 2 MiB/8 MiB
+  聚合缓冲交给 GC。硬塞进 1 MiB 类会让池长期占住大数组，按 cap 路由又没有
+  对应类可去——所以规则是"不回池"，池的内存上限因此有界。
+- **池里存 `*[]byte` cell 而不是 `[]byte` 值**：切片值（24 B 头）进 interface
+  每次 `Put` 都要装箱一次，cell 指针直接占 interface 的一个字；cell 随缓冲
+  过一生，稳态 Get/Put **零分配**（实测小帧编解码均 0 allocs/op）。
+
+释放点只有三处，全部有测试钉住（`pool_test.go`）：dispatch 返回后、分片
+append 进聚合后、编码缓冲写完之后。`release` 幂等（`released` 标志）并清零
+Header/Payload——用后释放立刻暴露成"空帧"，而不是静默读到别人的字节。
+
 #### ProtocolHandler 的五张表（`pkg/proto/protocol.go:80-119`）
 
 ```go
@@ -363,6 +398,16 @@ WorkerGroup.active、lifecycleConn.closed、requireHello、client.version——
 | 34 | future Do/Cancel 用 doneCh 关闭做一次性决议 | 标志位 | 关闭的 channel 是天然的广播一次性事件；Cancel 与 Do 竞态靠"已决议检查"保持第一个结果 |
 | 35 | janitor 作废会话时同步清成员集与补发缓存 | 只清 sessions/connTokens，成员集等下次 Publish 写失败再剔 | 过期会话永不再回来（与 resume 的换传输同构）；不清则静默 topic 上幽灵订阅者与被扣住的缓存无限期滞留 |
 | 36 | 注册闸门：`Add` 返回 bool，`CloseAll` 落锁后拒绝新注册 | ① 关闭后再重扫一遍 registry；② 把 cancel 提到 CloseAll 之前 | ① 重扫要靠 AwaitDone 超时才触发，5s 等待已白付且报错依旧；② 提前 cancel 并不消除窗口——注册与清扫仍是无同步点的两个操作，worker 完全可以在 cancel 后、CloseAll 后才注册（`-cpu=1` 实测复现）。同锁串行化才有 happens-before：拒绝→worker 自关，接受→CloseAll 必关，别无第三种时序（NOTES §17） |
+| 37 | payload 按尺寸分级池化（256B~1MiB，4× 步长） | 每长度一个精确 freelist | 长度无界则簿记无界；分级把浪费封在 4× 内换 7 个池（§1.3） |
+| 38 | 池内以 `*[]byte` cell 存缓冲 | 存 `[]byte` 值 | 24B 切片头进 interface 每次 Put 都要装箱；cell 指针占 interface 一个字，稳态零分配 |
+| 39 | 回收按 cap 路由到"最大的 ≤ cap 的类" | 按当初的类归还 | 300B 缓冲的 cap 能服务 256B 类；按 cap 归还可让 append 扩容出来的 8192 cap 回到 4K 类而不是丢弃 |
+| 40 | cap 超过最大类直接丢弃 | 按"最大 ≤ cap"硬塞 | 8MiB 聚合缓冲若归入 1MiB 类，池就变成内存滞留点；宁可给 GC 也不给它一个"看起来能用"的类 |
+| 41 | release 幂等 + 清零 | 裸 `Put` | 重复归还会让一个缓冲同时服务两个未来持有者（静默串数据）；不归零则用后释放读到别人的字节而非崩溃 |
+| 42 | 服务端入站/出站缓冲可回收，客户端入站与 Publish 缓存不池化 | 全部路径统一池化 | 客户端 `Response.Data` 别名逃逸到应用代码，无归还时机；Publish 缓存活过编码调用本身（§1.3 表） |
+| 43 | 池化只从内部 opt-in（`decodeStreamed`/`encodeMessage` 传 backend） | 改公开 `Decode`/`DecodeStreamed` 语义 | 公开 API 契约是"帧归调用方所有"；把所有权悄悄改成池化是隐式 API 破坏，且客户端路径本身不需要 |
+| 44 | poolBackend 作为参数逐层传递 | 包级可替换全局变量 | 全局会在别的连接仍在跑时被测试换掉：既 race，也让 fake 的计数受无关 goroutine 污染（pool.go 注释） |
+| 45 | 出站分片 join 到一块再写 | 逐片 `[][]byte` 写出 | 语义上逐片写与 join 后写等价（`[][]byte` 写出时 HeadHandler 逐个 `conn.Write`），join 的拷贝被同步写覆盖掉，合并不引入额外成本；保持"一次出站传播 = 一次 `HandleWrite`"的简单形态 |
+| 46 | 分片阈值越界（≤0 或 > MaxFrameSize）钳到 `[1, MaxFrameSize]` | 保持原行为：报 `ErrFrameTooLarge` 拒绝 | 阈值是 `NewFrameCodecWithStreamThreshold` 的调用方配置，让它能把管线卡成"无法编码"没有意义：0 会死循环、超限会产出无解码器能读的帧；钳位后任意配置都产出合法分片（`TestEncodeMessageClampsFragmentSize`、`TestEncodeStreamFramesClampsOversizeThreshold`） |
 
 ---
 
@@ -487,9 +532,16 @@ README 里那句 100% 就退化成无人验证的口头禅。所以 100% 由
 1. **HTTP/2 式 credit 流控未实现**——当前背压是"剔除慢订阅者"+有界队列，
    对推送网关场景够用；credit 需要双向窗口记账与复杂度成倍的协议状态，
    属于下一个量级的需求。
-2. **每帧分配无 sync.Pool**——Benchmark 已量化分配数（1KiB 请求 56 次分配），
-   是首批优化点；池化 Frame+payload 需要解决"载荷别名零拷贝与池回收"的
-   所有权冲突，做之前要想清楚。
+2. ~~**每帧分配无 sync.Pool**~~ **已落地**——原先列为首批优化点，前置
+   问题是"载荷别名零拷贝与池回收的所有权冲突"。`pkg/proto/pool.go` 把这
+   次清点做成了代码：三条所有权分析（见 §1.3 表格与决策 #37~#46）＋三处
+   释放点，`release` 幂等且清零。实测（见 Benchmark.md「帧对象池化 A/B」）：
+   端到端每请求分配 42→32（1KiB 流式 43→33、4MiB 125→100），公开解码
+   路径 4→2 次分配且快 38%，池化编解码稳态 0 allocs/0 B。延迟侧无
+   可测量回归也无改善——采样窗口内机器满载，同码对照基准的差值就有
+   ±10~15%，这一节据实标注了噪声底。**刻意保留的精确分配**：
+   客户端入站解码（`Response.Data` 别名逃逸）与 `Publish` 补发缓存（缓冲
+   要活过编码调用），理由见 §1.3——池化不是"全都要"，是"确定能归还的才要"。
 3. **JSON 载荷的反射开销**——19 次分配来自 encoding/json；接口已隔离，
    换 protobuf 不动帧层。
 4. **单 ProtocolHandler 实例承载全部会话状态**——五表一锁在单进程内正确；

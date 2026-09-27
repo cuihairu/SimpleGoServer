@@ -2,6 +2,7 @@ package proto
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"io"
 	"log"
@@ -226,15 +227,29 @@ func TestDecodeStreamedRejectsFragmentStreamMismatch(t *testing.T) {
 	}
 }
 
-func TestEncodeStreamFramesRejectsOversizeOutput(t *testing.T) {
-	// a threshold above MaxFrameSize lets an oversize payload slip past the
-	// split, so Encode itself must refuse the single frame
-	if _, err := encodeStreamFrames(REQUEST, 1, make([]byte, MaxFrameSize+1), MaxFrameSize+10); !errors.Is(err, ErrFrameTooLarge) {
-		t.Fatalf("oversize single frame = %v, want ErrFrameTooLarge", err)
+func TestEncodeStreamFramesClampsOversizeThreshold(t *testing.T) {
+	// A threshold above MaxFrameSize cannot be honored — no legal frame is
+	// that big — so it is clamped to the frame ceiling and the payload is
+	// split into fragments a decoder can actually read, instead of failing
+	// on a frame the protocol forbids.
+	buffers, err := encodeStreamFrames(REQUEST, 1, make([]byte, 3*MaxFrameSize+11), MaxFrameSize+10)
+	if err != nil {
+		t.Fatalf("encodeStreamFrames(): %v", err)
 	}
-	// and the fragment path: the first chunk is over the limit as well
-	if _, err := encodeStreamFrames(REQUEST, 1, make([]byte, 2*(MaxFrameSize+10)), MaxFrameSize+10); !errors.Is(err, ErrFrameTooLarge) {
-		t.Fatalf("oversize fragment = %v, want ErrFrameTooLarge", err)
+	if len(buffers) != 4 {
+		t.Fatalf("%d fragments, want 4", len(buffers))
+	}
+	for i, buf := range buffers {
+		if length := binary.BigEndian.Uint32(buf[6:10]); length > MaxFrameSize {
+			t.Fatalf("fragment %d announces %d bytes, over the limit", i, length)
+		}
+	}
+	frame, err := DecodeStreamed(bytes.NewReader(bytes.Join(buffers, nil)))
+	if err != nil {
+		t.Fatalf("DecodeStreamed(): %v", err)
+	}
+	if len(frame.Payload) != 3*MaxFrameSize+11 {
+		t.Fatalf("assembled %d bytes, want %d", len(frame.Payload), 3*MaxFrameSize+11)
 	}
 }
 
@@ -737,7 +752,8 @@ func TestFrameCodecReapsIdleConnection(t *testing.T) {
 func TestFrameCodecHandleWriteClosesOnUnencodableFrame(t *testing.T) {
 	codec := &FrameCodec{logger: log.New(io.Discard, "", 0), streamThreshold: 1 << 30}
 	ctx := &codecCtx{}
-	codec.HandleWrite(ctx, newFrame(REQUEST, 1, make([]byte, MaxFrameSize+1)))
+	// an empty payload is the one shape no frame can carry, pooled or not
+	codec.HandleWrite(ctx, newFrame(REQUEST, 1, nil))
 	if ctx.closed == nil {
 		t.Fatal("an unencodable frame must close the pipeline")
 	}

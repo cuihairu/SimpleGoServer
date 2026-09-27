@@ -739,12 +739,18 @@ type FrameCodec struct {
 	// streamThreshold is the outbound payload size above which frames are
 	// fragmented; inbound assembly is always accepted.
 	streamThreshold int
+
+	// pools supplies the frame and payload buffers this codec recycles. It
+	// is per-connection, set at construction and never swapped: a shared
+	// global would be reconfigured under connections still decoding.
+	pools poolBackend
 }
 
 func NewFrameCodec() *FrameCodec {
 	return &FrameCodec{
 		logger:          log.New(os.Stderr, "[codec]", log.LstdFlags),
 		streamThreshold: defaultStreamThreshold,
+		pools:           defaultPools,
 	}
 }
 
@@ -766,8 +772,16 @@ var _ handler.OutboundHandler = (*FrameCodec)(nil)
 // (io.EOF) also closes so the worker loop can finish quietly. A stream
 // violation (interleaved fragments, oversize assembly) is a protocol error
 // and closes too.
+//
+// The frame and its payload buffer come from the pools and are released
+// right after dispatch returns. That release point is sound because the
+// pipeline propagates inbound events as synchronous method calls: by the
+// time ctx.HandleRead comes back, the business handler has run, the response
+// has been marshaled and encoded, and nothing downstream references the
+// payload anymore (DecodeJSONMessage's Data alias is contractually dead by
+// then — see pool.go).
 func (c *FrameCodec) HandleRead(ctx handler.InboundContext, _ handler.Message) {
-	frame, err := DecodeStreamed(ctx.Conn())
+	frame, err := decodeStreamed(ctx.Conn(), c.pools)
 	if err != nil {
 		switch {
 		case errors.Is(err, os.ErrDeadlineExceeded):
@@ -783,31 +797,42 @@ func (c *FrameCodec) HandleRead(ctx handler.InboundContext, _ handler.Message) {
 		return
 	}
 	ctx.HandleRead(frame)
+	frame.release(c.pools)
 }
 
 // HandleWrite encodes *Frame messages on their way out; any other message
 // type is propagated unchanged towards the head of the pipeline. A payload
 // above the stream threshold is split into fragments encoded back to back,
 // so the wire never carries a frame larger than MaxFrameSize.
+//
+// Encoded buffers are pooled and released once the downstream write has
+// consumed them: the pipeline writes synchronously (HeadHandler's
+// conn.Write returns before HandleWrite does), so the bytes are on the wire
+// — or the connection is dead — by then. Publish never passes through here;
+// it caches its own Encode output for replay and keeps exact-size buffers.
 func (c *FrameCodec) HandleWrite(ctx handler.OutboundContext, message handler.Message) {
 	frame, ok := message.(*Frame)
 	if !ok {
 		ctx.HandleWrite(message)
 		return
 	}
-	buffers, err := encodeStreamFrames(frame.Header.FrameType, frame.Header.StreamId, frame.Payload, c.streamThreshold)
+	msg, err := encodeMessage(frame.Header.FrameType, frame.Header.StreamId, frame.Payload, c.streamThreshold, c.pools)
 	if err != nil {
 		ctx.Close(fmt.Errorf("proto: encode frame: %w", err))
 		return
 	}
-	if len(buffers) == 1 {
-		ctx.HandleWrite(buffers[0])
+	if msg.buf != nil {
+		// the common case: one buffer, no slice bookkeeping at all
+		ctx.HandleWrite(msg.buf)
+		msg.release(c.pools)
 		return
 	}
-	joined := make([]byte, 0, sumLens(buffers))
-	for _, buf := range buffers {
+	joined := make([]byte, 0, sumLens(msg.bufs))
+	for _, buf := range msg.bufs {
 		joined = append(joined, buf...)
 	}
+	// fragments are dead once joined; recycle before the write even starts
+	msg.release(c.pools)
 	ctx.HandleWrite(joined)
 }
 

@@ -8,6 +8,15 @@ import (
 	"time"
 )
 
+// TestEncodeStreamFramesRejectsUnencodablePayload: a payload no frame can
+// carry is refused by the plain encoder too — the pooled and plain paths
+// share Encode's validation, so neither can put an illegal frame on the wire.
+func TestEncodeStreamFramesRejectsUnencodablePayload(t *testing.T) {
+	if _, err := encodeStreamFrames(REQUEST, 1, nil, 1024); !errors.Is(err, ErrEmptyFrame) {
+		t.Fatalf("empty payload err = %v, want ErrEmptyFrame", err)
+	}
+}
+
 // TestEncodeStreamFramesSmallPayload checks the pass-through case: small
 // payloads stay a single plain frame, so nothing changes for peers that
 // never stream.

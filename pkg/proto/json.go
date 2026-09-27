@@ -124,7 +124,12 @@ func (m *zeroCopyRawMessage) UnmarshalJSON(data []byte) error {
 //
 // The Data field aliases the frame payload rather than copying it (the
 // struct's json.RawMessage would append-copy the whole payload); callers
-// must treat Data as read-only for as long as they hold the frame.
+// must treat Data as read-only for as long as they hold the frame. On the
+// server pipeline that means: read it, pass it on, or return it inside the
+// response value — the response is marshaled before the codec recycles the
+// frame — but do not stash it anywhere that outlives the handler's return,
+// because the pooled payload buffer goes back to the pool the moment
+// dispatch finishes (see pool.go).
 func DecodeJSONMessage(frame *Frame) (*JSONMessage, error) {
 	if frame == nil {
 		return nil, errors.New("proto: frame is nil")

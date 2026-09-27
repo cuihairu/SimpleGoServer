@@ -68,9 +68,26 @@ func (f FrameHeader) String() string {
 }
 
 // Frame is a fully decoded protocol frame: header plus payload.
+//
+// Field order is deliberate: scratch sits between Header and Payload so the
+// pointer field lands on an 8-byte boundary and the struct lands exactly on
+// the 64-byte size class. The same fields appended after Payload measure 72
+// bytes, which rounds up to the 80-byte class — 16 wasted bytes on every
+// heap-allocated frame, including the ones the public EncodeJSON hands out.
 type Frame struct {
 	Header  FrameHeader
+	scratch [HeaderSize]byte
 	Payload []byte
+
+	// Pool plumbing (unexported, invisible to composite literals with field
+	// names): fromPool admits recycling, released makes release idempotent,
+	// and payloadCell is the pool cell the payload buffer came from. scratch
+	// above is an inline header read buffer — a decode reads its 10 header
+	// bytes into space the frame already owns instead of allocating one per
+	// frame. See pool.go for the ownership contract.
+	fromPool    bool
+	released    bool
+	payloadCell *[]byte
 }
 
 func (f *Frame) String() string {

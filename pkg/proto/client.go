@@ -49,6 +49,11 @@ type Client struct {
 	// lock, so concurrent large calls cannot interleave on the wire.
 	streamThreshold int
 
+	// pools supplies the encoded wire buffers roundTrip recycles. Inbound
+	// decoding deliberately does not use it — see the ownership analysis
+	// in pool.go — so only the outbound path ever touches a pool here.
+	pools poolBackend
+
 	version atomic.Int32 // protocol version agreed in Handshake, 0 if none
 
 	closed   chan struct{}
@@ -71,6 +76,7 @@ func NewClient(conn net.Conn, onEvent EventHandler) *Client {
 		onEvent:         onEvent,
 		pending:         make(map[uint32]chan *Response),
 		streamThreshold: defaultStreamThreshold,
+		pools:           defaultPools,
 		closed:          make(chan struct{}),
 	}
 	go c.readLoop()
@@ -244,26 +250,31 @@ func (c *Client) roundTrip(t FrameType, respType FrameType, action string, data 
 	c.pending[id] = ch
 
 	frame, err := EncodeJSON(t, id, action, data)
-	var buffers [][]byte
+	var msg encodedMessage
 	if err == nil {
-		buffers, err = encodeStreamFrames(t, id, frame.Payload, c.streamThreshold)
+		msg, err = encodeMessage(t, id, frame.Payload, c.streamThreshold, c.pools)
 	}
 	if err != nil {
 		c.mu.Unlock()
 		c.removePending(id)
 		return nil, err
 	}
-	if len(buffers) == 1 {
+	if msg.buf != nil {
 		// the common case: writing outside the lock keeps a slow socket
 		// from stalling other callers that only want to register
 		c.mu.Unlock()
-		_, err = c.conn.Write(buffers[0])
+		_, err = c.conn.Write(msg.buf)
+		// the write has consumed the buffer (success or failure), so the
+		// pooled bytes can go back; inbound pooling is deliberately absent
+		// here — see pool.go for why Response.Data's alias forbids it
+		msg.release(c.pools)
 	} else {
 		// fragments of one message must reach the wire back to back, so
 		// concurrent callers cannot interleave their own frames between
 		// them; that is worth holding the lock through the writes
-		_, err = writeAll(c.conn, buffers)
+		_, err = writeAll(c.conn, msg.bufs)
 		c.mu.Unlock()
+		msg.release(c.pools)
 	}
 	if err != nil {
 		c.removePending(id)
