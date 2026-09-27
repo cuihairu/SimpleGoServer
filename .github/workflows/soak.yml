@@ -1,0 +1,169 @@
+name: Soak
+
+# The long-run stability test is the only thing in this repo that looks at the
+# time axis. goleak proves a goroutine is gone when a *test* ends, the
+# coverage gate proves every statement ran, and neither says anything about a
+# footprint that creeps upward over minutes — slow leaks and caches that never
+# settle fail on a timescale no push-triggered suite runs on, which is exactly
+# why this is a scheduled job rather than another step in ci.yml (left
+# untouched on purpose: the push gate stays fast and its density series stays
+# unpolluted by a job that takes ten minutes).
+#
+# docs/NOTES.md §17 applies verbatim here. A single pass has essentially no
+# statistical power against a low-probability failure (evidence is
+# 1-(1-p)^n; at n=1 that is nothing), so the value of this file is the *series*
+# it accumulates — and a series nobody can re-read after the runner is gone is
+# not a series. Hence -v plus a log artifact on every outcome: §17's 教训一 is
+# that truncated output destroys the only scene of the crime, and the soak's
+# evidence is precisely its sample lines (goroutines / heapInuse / numGC along
+# the run), which vanish from a green run's default output. The job summary
+# gets the same lines so the trend is readable without downloading anything.
+#
+# Deliberately the same command as the documented local invocation, and
+# deliberately without -race: race detection on the reactor hot path is already
+# owned by ci.yml's Test and Flake-tracking steps on every push, while this
+# gate measures the orthogonal axis (resource reclamation over minutes). Adding
+# -race would alter the allocation rates under measurement without adding a new
+# class of evidence, and would slow the churn stage into measuring the
+# detector. Stable toolchain only, for the same reason §17 gives for the x5
+# repeat: this measures a time series, not toolchain compatibility.
+#
+# Coexistence with ci.yml, checked rather than assumed: ci.yml triggers on
+# push/PR only and never sets SOAK, so the soak skips inside its `go test ./...`
+# — which is also why its coverage gate still reports 100% for pkg/reactor. This
+# file triggers on schedule/dispatch only, so no push ever waits on it. They
+# share no concurrency group (ci.yml declares none) and every job gets its own
+# runner VM, so a weekly soak cannot steal scheduler time from the push gate's
+# timing-sensitive `-count=5` leg, nor the reverse.
+
+on:
+  schedule:
+    # Weekly, Mondays 04:37 UTC. Off the round hour because scheduled jobs
+    # across GitHub cluster there; the day and hour carry no dependency, only
+    # a quiet window and a predictable cadence for the series. Scheduled runs
+    # only ever fire from the default branch, so the series is a series on main
+    # and nothing else — a dispatch from a scratch branch is the way to soak
+    # other work.
+    - cron: '37 4 * * 1'
+  workflow_dispatch:
+    inputs:
+      soak_seconds:
+        description: 'Total soak seconds (churn and steady stages split it in half)'
+        required: false
+        default: '600'
+
+# Least privilege, but not less than the job needs: scopes this block does not
+# name are set to none, so `actions: write` has to be explicit or
+# upload-artifact@v4 — which posts to the Actions artifact service, not to the
+# repo — fails with "Access denied" and the run's log is gone. That is the one
+# outcome this file exists to prevent, and it would only surface on the first
+# scheduled run, when nobody is watching a push.
+permissions:
+  contents: read
+  actions: write
+
+# The group is repo-wide, not per-ref, on purpose: a dispatch landing while the
+# weekly run is mid-churn would put two different trees' samples into one
+# series, and neither log would be attributable to a commit. Queue rather than
+# cancel, so a manual dispatch can never silently drop the scheduled run — the
+# cadence is the entire value of this gate.
+concurrency:
+  group: soak
+  cancel-in-progress: false
+
+jobs:
+  soak:
+    runs-on: ubuntu-latest
+    # The 15m -timeout below is the binding ceiling on how long this can soak;
+    # this one is the outer backstop for a stuck runner, with room for checkout,
+    # a cold module cache build and teardown reporting.
+    timeout-minutes: 30
+    env:
+      SOAK: '1'
+      # An expression in env, not interpolated into the shell text: a dispatched
+      # value can never inject commands.
+      SOAK_SECONDS: ${{ inputs.soak_seconds || '600' }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version: stable
+
+      # The test falls back to its 180s default when SOAK_SECONDS is unset or
+      # unparsable, which would let a typo turn this gate into a shorter run
+      # that still reports green. A gate that silently measures less than it
+      # claims is worse than one that fails: reject it out loud.
+      #
+      # The upper bound is the test's own -timeout 15m minus margin, not the job
+      # ceiling: measured, SOAK_SECONDS=600 spent 600.36 s and 600.46 s inside
+      # the test binary (churn seconds/2 + steady seconds/2, plus 15 s steady
+      # sampling granularity and the 10 s reclaim deadline), so a dispatched
+      # 900+ would be killed by -timeout mid-run and report a panic instead of a
+      # verdict. Raising this number without raising -timeout with it just
+      # schedules a guaranteed failure.
+      - name: Guard the soak duration
+        run: |
+          case "$SOAK_SECONDS" in
+            ''|*[!0-9]*) echo "SOAK_SECONDS must be a positive integer, got '$SOAK_SECONDS'" >&2; exit 1 ;;
+          esac
+          if [ "$SOAK_SECONDS" -lt 60 ] || [ "$SOAK_SECONDS" -gt 780 ]; then
+            echo "SOAK_SECONDS=$SOAK_SECONDS is outside [60, 780]: below 60 it measures nothing, above 780 the test's -timeout 15m kills it before it can report" >&2
+            exit 1
+          fi
+          echo "soaking for $SOAK_SECONDS s (test -timeout 15m, job ceiling 30m)"
+
+      - name: Soak (reactor)
+        # pipefail is load-bearing: without it `go test | tee` reports tee's
+        # exit status, so the soak could fail every week and this job could
+        # never go red.
+        shell: bash
+        run: set -o pipefail; go test ./pkg/reactor -run TestSoak -timeout 15m -v 2>&1 | tee "$RUNNER_TEMP/soak.log"
+
+      # First samples give the baseline, last ones give the endpoint: the trend
+      # is that pair, and the two 600 s runs measured here logged 17,345 and
+      # 26,698 sample lines, so neither end can just be tailed. The pattern was
+      # run against a real log: it matched only stage samples plus the failure
+      # strings, zero lines of the reactor's per-connection noise.
+      - name: Record the samples in the job summary
+        id: summary
+        if: always()
+        shell: bash
+        run: |
+          log="$RUNNER_TEMP/soak.log"
+          if [ ! -f "$log" ]; then
+            # Guard rejected the input, or the runner died before the soak step.
+            # Say that in the summary instead of grepping a missing file and
+            # letting the artifact step fail on an empty path — the reason the
+            # soak did not run would end up buried under a second red step.
+            echo "### Soak \`${GITHUB_SHA::7}\` — no log: the soak step never ran" >> "$GITHUB_STEP_SUMMARY"
+            echo "has_log=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "has_log=true" >> "$GITHUB_OUTPUT"
+          samples=$(grep -E 'churn |steady |steady-end|closed |reclaimed|did not return|goroutines grew|panic|error' "$log" || true)
+          total=$(printf '%s\n' "$samples" | grep -c . || true)
+          {
+            echo "### Soak \`${GITHUB_SHA::7}\` — ${SOAK_SECONDS}s, ${ImageOS:-runner}, ${GITHUB_EVENT_NAME}"
+            echo
+            echo '```'
+            printf '%s\n' "$samples" | head -3
+            echo "    ... (${total} sample lines total, full log in the artifact)"
+            printf '%s\n' "$samples" | tail -12
+            grep -E '^(ok |FAIL|--- PASS|--- FAIL)' "$log" || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # The artifact is the full log, including the reactor's per-connection
+      # lines and any goroutine dump: the trimmed summary above is for the
+      # trend, this is for the one run that needs explaining. Uploaded as plain
+      # text on purpose — a real 600 s log is 9-15 MB, which is affordable at a
+      # weekly cadence and 90-day retention, and the scene should open in one
+      # click rather than needing an extra step to unpack.
+      - name: Upload the full soak log
+        if: always() && steps.summary.outputs.has_log == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: soak-log-${{ github.run_number }}-${{ github.sha }}
+          path: ${{ runner.temp }}/soak.log
+          retention-days: 90

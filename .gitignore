@@ -19,6 +19,17 @@
 # written to a temp path, never the repo root
 *.cov
 
+# The rendered half of the same habit: `go tool cover -func > cover.txt`,
+# `go tool cover -html -o cover.html`, and a redirected `go test -bench`
+# capture. Ignored rather than deleted — they are an audit session's in-flight
+# evidence (§17 教训一: the scene outlives the verdict), and the repo never
+# loses them because the numbers worth keeping get transcribed into
+# docs/Benchmark.md and docs/NOTES.md, while the CI soak posts its own log as
+# a run artifact
+/cover.txt
+/cover.html
+/bench_*.txt
+
 # Dependency directories (remove the comment below to include it)
 # vendor/
 
