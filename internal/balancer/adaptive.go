@@ -51,23 +51,32 @@ func (a *AdaptiveBalancer[T]) Next(key string) (T, error) {
 		return a.backends[0], nil
 	}
 	// linear scan: comparing a handful of workers is cheaper than
-	// maintaining a heap for a small, mostly-static backend set
+	// maintaining a heap for a small, mostly-static backend set.
+	//
+	// Each backend's Load() is read exactly once and the minimum and the tie
+	// set are derived from that single pass. Load() is a live figure — other
+	// goroutines add and remove connections while this runs — so reading it
+	// twice (minimum in one loop, then ties against freshly read values) could
+	// leave nothing equal to the minimum that had already gone stale; the tie
+	// loop then assigned nothing and the caller got the zero value of T with a
+	// nil error, i.e. a nil *Worker, which panicked one frame later in
+	// AddConn. Seeding next with backends[0] keeps the function total: the
+	// result is always a registered backend, and only ever one whose own
+	// observation equalled the best seen so far.
 	best := a.backends[0].Load()
-	for i := 1; i < size; i++ {
-		if load := a.backends[i].Load(); load < best {
-			best = load
-		}
-	}
+	next = a.backends[0]
 	// reservoir-style pick among the tied winners so equally idle backends
 	// share traffic evenly instead of pinning to the first one
-	ties := 0
-	for i := 0; i < size; i++ {
-		if a.backends[i].Load() != best {
-			continue
-		}
-		ties++
-		if a.random.Intn(ties) == 0 {
-			next = a.backends[i]
+	ties := 1
+	for i := 1; i < size; i++ {
+		switch load := a.backends[i].Load(); {
+		case load < best:
+			best, next, ties = load, a.backends[i], 1
+		case load == best:
+			ties++
+			if a.random.Intn(ties) == 0 {
+				next = a.backends[i]
+			}
 		}
 	}
 	return next, nil

@@ -61,6 +61,18 @@ func (rejectBalancer) Unregister(*Worker) error     { return nil }
 func (rejectBalancer) Size() int                    { return 0 }
 func (rejectBalancer) Iterate(func(*Worker) bool)   {}
 
+// nilBalancer keeps the letter of the interface while breaking its contract:
+// no error, and no worker either. rejectBalancer covers the honest failure;
+// this covers the dishonest one, which is what actually reached the accept
+// loop and panicked.
+type nilBalancer struct{}
+
+func (nilBalancer) Next(string) (*Worker, error) { return nil, nil }
+func (nilBalancer) Register(*Worker) error       { return nil }
+func (nilBalancer) Unregister(*Worker) error     { return nil }
+func (nilBalancer) Size() int                    { return 0 }
+func (nilBalancer) Iterate(func(*Worker) bool)   {}
+
 // scriptedListener serves pre-programmed Accept failures first, then hands
 // out queued connections, and reports net.ErrClosed once closed.
 type scriptedListener struct {
@@ -498,6 +510,28 @@ func TestReactorReportsDispatchFailure(t *testing.T) {
 	}
 	_ = listener.Close() // the accept loop exits on net.ErrClosed
 	time.Sleep(50 * time.Millisecond)
+}
+
+// TestDispatchSurvivesBalancerReturningNoWorker is the seam half of the crash
+// that killed the first CI soak run. rejectBalancer above proves a balancer can
+// fail honestly; the balancer is injected, so Dispatch must also survive one
+// that fails dishonestly — no error and no worker — as a closed connection plus
+// a reported error rather than a nil dereference inside the accept loop.
+func TestDispatchSurvivesBalancerReturningNoWorker(t *testing.T) {
+	group := &WorkerGroup{balancer: nilBalancer{}}
+	conn, peer := net.Pipe()
+	defer peer.Close()
+
+	err := group.Dispatch(conn)
+	if err == nil || !strings.Contains(err.Error(), "no worker") {
+		t.Fatalf("Dispatch() = %v, want the contract breach reported", err)
+	}
+	// Ownership is the whole point of the branch: an error without a close
+	// would leak the fd just as quietly as the panic leaked the process.
+	_ = peer.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if _, err := peer.Read(make([]byte, 1)); err == nil {
+		t.Fatal("expected the unowned connection to be closed by Dispatch")
+	}
 }
 
 // TestReactorAcceptBackoffLadder survives a run of transient accept

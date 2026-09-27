@@ -410,6 +410,7 @@ WorkerGroup.active、lifecycleConn.closed、requireHello、client.version——
 | 46 | 分片阈值越界（≤0 或 > MaxFrameSize）钳到 `[1, MaxFrameSize]` | 保持原行为：报 `ErrFrameTooLarge` 拒绝 | 阈值是 `NewFrameCodecWithStreamThreshold` 的调用方配置，让它能把管线卡成"无法编码"没有意义：0 会死循环、超限会产出无解码器能读的帧；钳位后任意配置都产出合法分片（`TestEncodeMessageClampsFragmentSize`、`TestEncodeStreamFramesClampsOversizeThreshold`） |
 | 47 | 信封组装收敛为 `envelope.bytes` 共享核心，三处调用方（`EncodeJSON`、`handleRequestFrame`、`mustJSON`）走同一条 splice | 响应路径各自 `json.Marshal(&JSONMessage{...})` | 响应只是搬运已经编好的字节，那次结构体 marshal 仍要付装箱与结果克隆：实测端到端 echo 每请求 −1 次分配、−46 B（`Benchmark.md`「编解码热点实测优化」有分配点清点，两处消失的分配各挂其名）。`TestEnvelopeBytesMatchesStruct` 把共享核心钉成与结构体 marshal 逐字节相等，线格式不变 |
 | 48 | 热点 ASCII 校验保持 byte loop | SWAR 逐词校验（一个 8 字节词判完 7 个禁用类） | 1 MiB 纯 ASCII 微基准 byte loop 2.64 ms vs SWAR 3.66 ms——**持平或更慢**。全 plain 输入下逐字节分支完全可预测、约 3 cycles/byte 已接近 memcpy，而 SWAR 每个词仍要付一次取词拷贝，位运算省下的东西抵不上成本。原型已回退，判定记在 `json.go` 注释与 Benchmark.md「编解码热点实测优化」，免得后人重踩 |
+| 49 | 自适应 balancer 的 `Next` 单遍扫描：最小值与并列集来自同一组观测，`next` 用 `backends[0]` 播种；`Dispatch` 另拒"无错误也无 worker" | `Load()` 读两遍（一遍求 min、一遍比 ties），调用方直接 `worker.AddConn(conn)` | `Load()` 是活体计数，两遍之间所有后端都可能统统挪走 ⇒ `ties=0` ⇒ 返回 `T` 的零值 + nil error ⇒ 一帧后 nil deref：soak 门禁按 60 秒下界在 2 核 runner 上的首跑实录（NOTES §17，本地 14 worker 因"任一后端仍等于旧最小值"而长期掩蔽）。红测试用 `risingBackend`（每观测一次 +1），旧实现第 0 次调用即红，并钉住"每后端每次 `Next` 恰好读一次"。balancer 是可注入策略，故接缝也守：`nilBalancer` 测 `Dispatch` 关连接并报 `%T`，与既有 `rejectBalancer`（诚实失败）成对 |
 
 ---
 

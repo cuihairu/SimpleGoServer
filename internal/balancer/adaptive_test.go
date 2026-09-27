@@ -137,4 +137,67 @@ func TestAdaptiveBalancerConcurrentNext(t *testing.T) {
 	wg.Wait()
 }
 
-var _ pkg.Backend = (*loadBackend)(nil)
+// risingBackend walks its load upward on every observation. That is not a
+// fantasy backend: a real *reactor.Worker's Load() is an atomic connection
+// counter that other goroutines move while Next() runs, so "the figure moved
+// under us mid-call" is the normal case. loadBackend cannot show it because
+// its value only moves between Next() calls, never during one — which is why
+// every statement here was covered for four days while the interleaving was
+// never once exercised.
+type risingBackend struct {
+	id   string
+	seen int
+}
+
+func (b *risingBackend) Id() string { return b.id }
+
+func (b *risingBackend) Load() float64 {
+	b.seen++
+	return float64(b.seen)
+}
+
+// TestAdaptiveBalancerNextReadsLoadOncePerBackend pins the invariant that
+// keeps Next() total: a backend is only offered if its load equals the minimum
+// of the same set of observations. Reading Load() twice — the old shape, which
+// computed the minimum in one loop and matched ties in a second loop over
+// freshly read values — let a live counter drift past the minimum it had just
+// computed, so the tie loop matched nothing and returned the zero value of T
+// (a nil *Worker in production) together with a nil error. The soak gate's
+// first CI run died on exactly that, one frame later in Worker.AddConn.
+func TestAdaptiveBalancerNextReadsLoadOncePerBackend(t *testing.T) {
+	balancer := NewAdaptiveBalancer[*risingBackend]()
+	backends := []*risingBackend{{id: "backend-a"}, {id: "backend-b"}, {id: "backend-c"}}
+	for _, b := range backends {
+		if err := balancer.Register(b); err != nil {
+			t.Fatalf("Register(): %v", err)
+		}
+	}
+
+	const calls = 64
+	for i := 0; i < calls; i++ {
+		next, err := balancer.Next("")
+		if err != nil {
+			t.Fatalf("Next(): %v", err)
+		}
+		if next == nil {
+			t.Fatalf("Next() call %d returned a nil backend with a nil error: the tie "+
+				"scan matched no observation of the minimum it had computed, so callers "+
+				"get an untyped zero value and no signal to check", i)
+		}
+	}
+	// The symptom alone is not enough: a fix that reads Load() three times and
+	// happens to always find a tie would pass the loop above. One observation
+	// per backend per call is what makes the minimum and the ties the same
+	// snapshot.
+	for _, b := range backends {
+		if b.seen != calls {
+			t.Errorf("%s: Load() was observed %d times over %d Next() calls, want exactly %d — one read per call",
+				b.id, b.seen, calls, calls)
+		}
+	}
+}
+
+var (
+	_ pkg.Backend = (*loadBackend)(nil)
+	_ pkg.Backend = (*risingBackend)(nil)
+)

@@ -95,6 +95,18 @@ func (g *WorkerGroup) Dispatch(conn net.Conn) error {
 		_ = conn.Close()
 		return err
 	}
+	if worker == nil {
+		// A balancer that reports no error but hands over no worker breaks the
+		// contract the accept loop routes on. The balancer is injected, so the
+		// reactor cannot assume it is the fixed internal one: this is exactly
+		// the shape that took down a CI soak run (internal/balancer's
+		// stale-minimum bug, where the nil travelled one frame before
+		// segfaulting in AddConn). Same ownership rule as the error branch —
+		// close, because nobody else owns this fd — and name the balancer so a
+		// third-party strategy is diagnosable rather than mysterious.
+		_ = conn.Close()
+		return fmt.Errorf("reactor: balancer %T reported no error and no worker", g.balancer)
+	}
 	return worker.AddConn(conn)
 }
 
