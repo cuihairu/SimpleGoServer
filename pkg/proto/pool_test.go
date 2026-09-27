@@ -21,13 +21,18 @@ import (
 // semantics are the standard library's problem.
 
 type fakePools struct {
+	getFrames   int
+	putFrames   int
 	getPayloads []int // class indexes acquired, in order
 	putPayloads []int // class indexes released, in order
-	putFrames   int
 }
 
-func (f *fakePools) getFrame() *Frame { return &Frame{} }
-func (f *fakePools) putFrame(*Frame)  { f.putFrames++ }
+func (f *fakePools) getFrame() *Frame {
+	f.getFrames++
+	return &Frame{}
+}
+func (f *fakePools) putFrame(*Frame) { f.putFrames++ }
+
 func (f *fakePools) getPayload(idx int) *[]byte {
 	f.getPayloads = append(f.getPayloads, idx)
 	cell := new([]byte)
@@ -39,11 +44,12 @@ func (f *fakePools) putPayload(idx int, cell *[]byte) {
 	f.putPayloads = append(f.putPayloads, idx)
 }
 
+// poolBackend interface implementation
+var _ poolBackend = (*fakePools)(nil)
+
 func withFakePools(t *testing.T) *fakePools {
 	t.Helper()
-	fake := &fakePools{}
-	t.Cleanup(func() {})
-	return fake
+	return &fakePools{}
 }
 
 func intsEqual(got, want []int) bool {
@@ -176,7 +182,7 @@ func TestAggregationRecyclesFragmentsDuringAssembly(t *testing.T) {
 	fake := withFakePools(t)
 
 	// three fragments with distinct size classes: 100B (idx 0, becomes the
-	// aggregate), 300B (idx 1), 6000B (idx 3)
+	// aggregate), 300B (idx 1), 6000B (idx 3, since 6000 > 4096)
 	var wire []byte
 	wire = append(wire, encodeFragment(t, 5, true, bytes.Repeat([]byte("a"), 100))...)
 	wire = append(wire, encodeFragment(t, 5, true, bytes.Repeat([]byte("b"), 300))...)
@@ -215,7 +221,10 @@ func TestStreamDecodeErrorRecyclesFirstFragment(t *testing.T) {
 	if !errors.Is(err, io.EOF) {
 		t.Fatalf("err = %v, want io.EOF", err)
 	}
-	// Two frames released: the failed second-fragment decode, and the first fragment
+	// Two frames released, one payload: the frame decodeFrame had just acquired
+	// when the *header* read hit EOF (codec.go:98 — it never reached
+	// acquirePayload, so it contributes no payload put), and the first fragment
+	// this call was holding for aggregation (stream.go:74).
 	if !intsEqual(fake.putPayloads, []int{0}) || fake.putFrames != 2 {
 		t.Fatalf("error path recycling: putPayloads=%v putFrames=%d, want [0]/2", fake.putPayloads, fake.putFrames)
 	}
@@ -345,7 +354,7 @@ type inboundStub struct {
 
 func (s *inboundStub) Conn() net.Conn                   { return s.conn }
 func (s *inboundStub) Handler() handler.Handler         { return nil }
-func (s *inboundStub) Write(handler.Message)            {}
+func (s *inboundStub) Write(m handler.Message)          {}
 func (s *inboundStub) Close(error)                      {}
 func (s *inboundStub) Attachment() handler.Attachment   { return nil }
 func (s *inboundStub) SetAttachment(handler.Attachment) {}
@@ -400,11 +409,32 @@ func TestFrameCodecReleasesFrameAfterDispatch(t *testing.T) {
 	}
 }
 
+// writeProbe is an OutboundContext that also records the pool's state at the
+// exact moment the bytes are handed downstream. HandleWrite's two branches
+// release in *opposite* orders — the single buffer after the write, the
+// fragments before it — and that ordering is the difference between a recycled
+// array still being written and one that is safely dead. A test that copies the
+// encode/join/release sequence into itself cannot observe it, because nothing in
+// that copy goes through the production branch.
+type writeProbe struct {
+	handler.OutboundContext
+	fake        *fakePools
+	written     []byte
+	putsAtWrite int
+}
+
+func (p *writeProbe) HandleWrite(message handler.Message) {
+	p.putsAtWrite = len(p.fake.putPayloads)
+	if b, ok := message.([]byte); ok {
+		p.written = append(p.written, b...)
+	}
+}
+
 func TestFrameCodecHandleWriteReleasesSingleEncodedBuffer(t *testing.T) {
 	fake := withFakePools(t)
 	codec := NewFrameCodec()
 	codec.pools = fake
-	out := &captureOutbound{}
+	out := &writeProbe{fake: fake}
 	payload := bytes.Repeat([]byte("p"), 40) // 50B total -> class 0
 	frame := newFrame(RESPONSE, 2, payload)
 
@@ -413,8 +443,22 @@ func TestFrameCodecHandleWriteReleasesSingleEncodedBuffer(t *testing.T) {
 	if !bytes.Contains(out.written, payload) {
 		t.Fatal("downstream write missed the payload")
 	}
+	if !intsEqual(fake.getPayloads, []int{0}) {
+		t.Fatalf("encoded buffer acquire: getPayloads=%v, want [0]", fake.getPayloads)
+	}
 	if !intsEqual(fake.putPayloads, []int{0}) {
 		t.Fatalf("encoded buffer routing: putPayloads=%v, want [0]", fake.putPayloads)
+	}
+	// The frame is the caller's, not the pool's: the outbound path must neither
+	// borrow another frame nor recycle the one it was handed.
+	if fake.getFrames != 0 || fake.putFrames != 0 {
+		t.Fatalf("frame pool traffic on the write path: get=%d put=%d, want 0/0",
+			fake.getFrames, fake.putFrames)
+	}
+	// Downstream still needs the bytes, so nothing may have been recycled yet.
+	if out.putsAtWrite != 0 {
+		t.Fatalf("%d buffer(s) were already recycled when the write happened; "+
+			"the single-buffer path must release after it", out.putsAtWrite)
 	}
 }
 
@@ -422,7 +466,7 @@ func TestFrameCodecHandleWriteReleasesFragmentsAfterJoin(t *testing.T) {
 	fake := withFakePools(t)
 	codec := NewFrameCodecWithStreamThreshold(8)
 	codec.pools = fake
-	out := &captureOutbound{}
+	out := &writeProbe{fake: fake}
 	payload := bytes.Repeat([]byte("f"), 20) // 3 fragments of <= 8B
 
 	codec.HandleWrite(out, newFrame(REQUEST, 1, payload))
@@ -430,12 +474,30 @@ func TestFrameCodecHandleWriteReleasesFragmentsAfterJoin(t *testing.T) {
 	if len(fake.putPayloads) != 3 {
 		t.Fatalf("fragment puts = %v, want three recycles", fake.putPayloads)
 	}
+	// Every acquire comes back, in its own class: three fragments out of three
+	// acquires, none recycled to a class it was not taken from.
+	if !intsEqual(fake.getPayloads, fake.putPayloads) {
+		t.Fatalf("fragment classes: get=%v put=%v, want each acquire returned "+
+			"to the class it came from", fake.getPayloads, fake.putPayloads)
+	}
 	assembled, err := DecodeStreamed(bytes.NewReader(out.written))
 	if err != nil {
 		t.Fatalf("DecodeStreamed(): %v", err)
 	}
 	if !bytes.Equal(assembled.Payload, payload) {
 		t.Fatal("joined bytes do not reassemble to the original payload")
+	}
+	// The opposite ordering from the single-buffer branch, and the reason both
+	// need to run through HandleWrite rather than a copy in this file: the
+	// fragments must already be back in the pool by the time the joined bytes
+	// go downstream, because the join copied them.
+	if out.putsAtWrite != 3 {
+		t.Fatalf("%d fragment(s) recycled at write time, want all 3 already "+
+			"returned before the write", out.putsAtWrite)
+	}
+	if fake.getFrames != 0 || fake.putFrames != 0 {
+		t.Fatalf("frame pool traffic on the write path: get=%d put=%d, want 0/0",
+			fake.getFrames, fake.putFrames)
 	}
 }
 
