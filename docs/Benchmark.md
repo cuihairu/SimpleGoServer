@@ -283,26 +283,50 @@ A 轮（迭代数钉死）的结构指标与 B 轮的延迟参考并列；两轮
 对象：`pkg/proto/json.go` 的 JSON 信封组装。`EncodeJSON` 早已手拼信封
 （大载荷省掉一次全量拷贝），但服务端响应路径（`handleRequestFrame`、
 `mustJSON`）仍在走"先 marshal 业务体、再 marshal `JSONMessage` 结构体"
-两次编码——第二次纯粹是搬运已经编好的字节，还要付 marshaler 查找、
-装箱 struct 与 encoder 缓冲。改动是把手拼信封收敛成 `envelope.bytes`
-一个共享核心，三处调用方都走它；`TestEnvelopeBytesMatchesStruct` 把共享
+两次编码——第二次纯粹是搬运已经编好的字节，还要付 marshaler 查找、结构体
+装箱与一次结果克隆（实测消失的正是后两处，见下文清点）。改动是把手拼信封
+收敛成 `envelope.bytes` 一个共享核心，三处调用方都走它；`TestEnvelopeBytesMatchesStruct` 把共享
 核心与结构体 marshal 钉死为逐字节相等，所以线格式不变。
 
-**采样协议**：Before 侧取 HEAD `0145254` 的独立 worktree，
-`BenchmarkReactorEchoThroughput -benchmem -benchtime 1000x -count 5`，
-两侧同一台机器、同一时间窗。分配数是结论，ns/op 只看有无回归。
+**采样协议**：Before 侧取 HEAD `0145254` 的独立 worktree，按本文档 A 轮口径
+`BenchmarkReactorEchoThroughput -benchmem -benchtime 2000x` 两侧交替执行，
+同机、同一时间窗（窗口内负载约 10/14）。分配数是结论，ns/op 只看有无回归。
 
-| 基准 | Before（5 轮） | After（5 轮） | 结论 |
+| 基准 | Before | After | 结论 |
 | --- | --- | --- | --- |
-| EchoThroughput allocs/op | 33, 33, 33, 33, 32（中位 33） | 32, 31, 31, 31, 31（中位 31） | **−2/次** |
-| EchoThroughput B/op | 1843, 1770, 1772, 1772, 1765 | 1768, 1712, 1706, 1725, 1708 | **−~60 B/次** |
-| EchoThroughput ns/op | 52~89 µs | 95~179 µs | 方向不定，噪声内，无结论 |
-| JSONEnvelope（小信封） | 15 allocs | 15 allocs | 同一份工作换了个位置，无变化 |
-| JSONEnvelopeString1MiB | 7 allocs | 7 allocs | 同上；时间两侧 min 相差 ~10%，噪声内 |
+| EchoThroughput allocs/op（3 组交替） | 32, 32, 32 | 31, 31, 31 | **−1/次**，六轮零重叠 |
+| EchoThroughput B/op | 1699, 1703, 1708 | 1654, 1660, 1659 | **−46 B/次** |
+| EchoThroughput ns/op（每侧取 min） | 8.99 µs | 8.49 µs | −5.5%，落在 ±10~15% 噪声底内，不作宣称 |
+| JSONEnvelope（小信封，单元） | 15 allocs / 421 B | 15 allocs / 421 B | 工作量相同的对照：splice 换了归属，分配一分不变 |
+| JSONEnvelopeString1MiB | 7 allocs / ~1.00 MB | 7 allocs / ~1.00 MB | 同上；时间两侧相差 ~10%，噪声内 |
 
-读法：每次 echo 少约 2 次分配——响应路径省掉一次结构体 marshal
-（encoder 缓冲 + 装箱），请求路径不动。数字小，但它是确定性的：
-五轮中位各降 2，且无一轮 After 高于 Before 中位。延迟侧不作任何宣称。
+**分配点清点**（`GODEBUG=memprofilerate=1` + `-test.memprofile`，两侧同窗口
+各跑 2000 次 echo，对象数按 b.N 归一）——少掉的分配有名字：
+
+| 站点 | Before | After |
+| --- | --- | --- |
+| `handleRequestFrame` 自身（逃逸的 `&JSONMessage` 装箱） | 1.0 | **0** |
+| `bytes.Clone`（stdlib marshal 的结果克隆） | 2.0 | **1.0** |
+| `EncodeJSON` 自身（请求路径的 splice） | 2.0 | 1.0 |
+| `envelope.bytes`（共享 splice） | — | 2.0 |
+
+读法：响应路径原先为"搬运已经编好的字节"付两次分配——结构体装箱一次、
+`json.Marshal` 把 encoder 缓冲克隆成结果一次；现在只剩一次精确容量的
+`make`，净 **−1**。请求路径没有变快也没有变慢，只是那一次 splice 从
+`EncodeJSON` 搬进了共享核心，这正是两条"工作量相同"的单元基准（15→15、
+7→7）读平的原因——它们是这一节的尺子：改动没让它们多做工作，读数就没动。
+B/op −46 与消失的结构体装箱同量级（`JSONMessage` 是 16+24=40 B 的值，落
+48 B 尺寸类）。数字小，但它有分配点上的名字，不是采样抖出来的。延迟侧不作
+任何宣称。
+
+**口径修正（初稿读数）**：本节初稿用 `-benchtime 1000x -count 5` 采到
+Before 33/33/33/33/32、After 32/31/31/31/31，读作"−2"。改按本文档 A 轮
+口径的 2000x 复查后，两侧稳定读作 32/31，且分配点清点确认结构上只少 1 次
+——固定迭代数的 benchtime 摊不薄每 worker 的 dial/handshake setup 与
+`sync.Pool` 重填，会把 allocs/op 整体抬高（「帧对象池化 A/B」标注过同一类
+采样偏差；两侧抬幅为何不同，这里没有实测解释，不作归因）。两种口径下 After
+都读 31，而结构上的差由分配点清点定性：**−1**，两个站点各有名字。结论采
+2000x 读数，初稿数字据实留档。
 
 **被否掉的优化也记一笔**：`jsonPlainASCII` 曾被改写为 SWAR 逐词扫描
 （1 MiB 纯 ASCII 字符串是信封组装里整遍过字节的一趟，byte loop 看似可疑）。
@@ -330,8 +354,13 @@ byte loop，`json.go` 注释里留了这一条，免得后人重踩。
    `sync.Pool` 复用。基准已可复现，优化前后可用同一命令对比。
    —— 第二项已于 2026-09-27 落地，实测见上文「帧对象池化 A/B」：端到端
    每请求 42 → 32 次分配，公开解码路径 4 → 2 次且快 38%，池化路径
-   稳态 0 分配。**第一项（JSON 反射）仍是最大的单块成本**：15 次分配
-   全部来自 `encoding/json`，接口已隔离，换 Protobuf 可整体消掉。
+   稳态 0 分配。**第一项（JSON 反射）仍是最大的单块成本**，但它现在有了
+   实测的成分表：小信封单元基准 15 次分配里约 11.5 次属于 `encoding/json`
+   （marshal 侧 `reflect.unsafe_New` 8.5 + 结果克隆 1，解码侧 2），另 2 次是
+   我们自己的信封 splice 与 Frame 装箱——基线那句"19 次全部来自反射"是
+   初始环境的读数，按站点重采后并非全部。端到端 echo 的反射本体约 13 次
+   （见上文「编解码热点实测优化」的清点），信封搬运那部分已经收敛，剩下的
+   不是搬运优化能碰的。接口已隔离，换 Protobuf 可整块消掉反射这一份。
 
 ## 长稳测试与内存泄漏曲线
 

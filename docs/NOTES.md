@@ -223,6 +223,15 @@ G 必须挂在 P 上才能执行。调度要点：
   （按 Length 精确分配）、1 KiB 端到端请求 56 次分配（约 19 次来自
   encoding/json 反射）——**分配数是比耗时更稳定的结构指标**，Benchmark
   三次复采都以"分配数随载荷对数增长而非随分片数线性"作结构结论；
+- **固定迭代数的 setup 摊销**：`-benchtime` 取固定次数时，每个 worker 的
+  dial/handshake setup 与 `sync.Pool` 重填都会计进 allocs/op，迭代数越低
+  摊得越不薄；两侧每次调用的分配压力不等时，被抬高的那侧更明显。实测代价：
+  同一对改动在 `-benchtime 1000x` 读作 33→31（−2），改按本文 A 轮口径的
+  2000x 两侧交替读作 32→31（−1），且分配点清点确认结构上只少 1 次。**所以
+  改动声称的分配数减少必须由归因背书，不能只信 `-benchmem` 的差值**：
+  `GODEBUG=memprofilerate=1` + `-test.memprofile` + `pprof -peek` 能指出
+  消失的是哪两个站点（本例：逃逸的结构体装箱、stdlib 的结果克隆），差值
+  与站点清单对得上才算数；
 - gctrace 的实战记录：定位流式大消息延迟时 `GODEBUG=gctrace=1` 显示
   GC CPU 占比 ~1%、STW <0.1 ms，**据此排除 GC**、把嫌疑集中到双重
   编码（Benchmark §附）——"先排除，再定位"的方法论比结论本身更值钱；

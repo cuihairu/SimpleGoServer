@@ -408,6 +408,8 @@ WorkerGroup.active、lifecycleConn.closed、requireHello、client.version——
 | 44 | poolBackend 作为参数逐层传递 | 包级可替换全局变量 | 全局会在别的连接仍在跑时被测试换掉：既 race，也让 fake 的计数受无关 goroutine 污染（pool.go 注释） |
 | 45 | 出站分片 join 到一块再写 | 逐片 `[][]byte` 写出 | 语义上逐片写与 join 后写等价（`[][]byte` 写出时 HeadHandler 逐个 `conn.Write`），join 的拷贝被同步写覆盖掉，合并不引入额外成本；保持"一次出站传播 = 一次 `HandleWrite`"的简单形态 |
 | 46 | 分片阈值越界（≤0 或 > MaxFrameSize）钳到 `[1, MaxFrameSize]` | 保持原行为：报 `ErrFrameTooLarge` 拒绝 | 阈值是 `NewFrameCodecWithStreamThreshold` 的调用方配置，让它能把管线卡成"无法编码"没有意义：0 会死循环、超限会产出无解码器能读的帧；钳位后任意配置都产出合法分片（`TestEncodeMessageClampsFragmentSize`、`TestEncodeStreamFramesClampsOversizeThreshold`） |
+| 47 | 信封组装收敛为 `envelope.bytes` 共享核心，三处调用方（`EncodeJSON`、`handleRequestFrame`、`mustJSON`）走同一条 splice | 响应路径各自 `json.Marshal(&JSONMessage{...})` | 响应只是搬运已经编好的字节，那次结构体 marshal 仍要付装箱与结果克隆：实测端到端 echo 每请求 −1 次分配、−46 B（`Benchmark.md`「编解码热点实测优化」有分配点清点，两处消失的分配各挂其名）。`TestEnvelopeBytesMatchesStruct` 把共享核心钉成与结构体 marshal 逐字节相等，线格式不变 |
+| 48 | 热点 ASCII 校验保持 byte loop | SWAR 逐词校验（一个 8 字节词判完 7 个禁用类） | 1 MiB 纯 ASCII 微基准 byte loop 2.64 ms vs SWAR 3.66 ms——**持平或更慢**。全 plain 输入下逐字节分支完全可预测、约 3 cycles/byte 已接近 memcpy，而 SWAR 每个词仍要付一次取词拷贝，位运算省下的东西抵不上成本。原型已回退，判定记在 `json.go` 注释与 Benchmark.md「编解码热点实测优化」，免得后人重踩 |
 
 ---
 
@@ -542,8 +544,18 @@ README 里那句 100% 就退化成无人验证的口头禅。所以 100% 由
    ±10~15%，这一节据实标注了噪声底。**刻意保留的精确分配**：
    客户端入站解码（`Response.Data` 别名逃逸）与 `Publish` 补发缓存（缓冲
    要活过编码调用），理由见 §1.3——池化不是"全都要"，是"确定能归还的才要"。
-3. **JSON 载荷的反射开销**——19 次分配来自 encoding/json；接口已隔离，
-   换 protobuf 不动帧层。
+3. **JSON 载荷的反射开销**——"19 次分配来自 encoding/json"是基线环境的
+   口径，本轮实测把它改写成了有名字的成分（`Benchmark.md`「编解码热点实测
+   优化」的分配点清点）：端到端 echo 现在每请求 31 次分配，其中反射本体约
+   13 次——响应体 `json.Marshal` 9.1 次（`reflect.unsafe_New` 8 + stdlib
+   把 encoder 缓冲克隆成结果 1，全部挂在 `handleRequestFrame` 下），请求
+   与响应两处 `DecodeJSONMessage` 各 2 次；另有 4 次是基准夹具自己构造业务
+   载荷，不是框架成本。信封组装收敛为共享核心（决策 #47）省掉的正是我们自己
+   那两次搬运分配（每请求 −1 次、−46 B），**反射本体一分没动**，因为它不是
+   拼掉一次拷贝就能消的东西。接口已隔离，换 protobuf 可以整块消掉，不动帧层。
+   两条看着能省的捷径都已判定不做：扫描热点改 SWAR 实测持平或更慢（决策
+   #48）；手写绕开 `encoding/json` 只能再省 envelope 层的 1~2 次装箱，却要把
+   转义、数字与嵌套文法的正确性整片接过来——收益与风险不对称。
 4. **单 ProtocolHandler 实例承载全部会话状态**——五表一锁在单进程内正确；
    多实例部署需要会话/订阅状态外置（Redis），那是分布式章节的事。
 5. **TLS 与认证未做**——Flags 预留位已留，传输加密交给部署层（LB 终结或

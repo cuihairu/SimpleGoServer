@@ -57,10 +57,11 @@ func EncodeJSON(t FrameType, streamId uint32, action string, data any) (*Frame, 
 // shared by EncodeJSON and the server response paths (handleRequestFrame,
 // mustJSON). Before the shared core existed those paths marshaled the
 // JSONMessage struct through encoding/json — paying the marshaler lookup,
-// the boxed struct and an encoder buffer per response just to move bytes
-// that were already encoded; end-to-end echo medians moved 33→31
-// allocs/op (Benchmark.md「编解码热点实测优化」). byte-for-byte equality
-// with the struct marshal is pinned by TestEncodeJSONMatchesStruct.
+// an escaped struct box and a clone of the encoder buffer per response just
+// to move bytes that were already encoded. Those two allocations are exactly
+// what disappeared: end-to-end echo went 32→31 allocs/op and −46 B/op, site
+// by site in Benchmark.md「编解码热点实测优化」. byte-for-byte equality with
+// the struct marshal is pinned by TestEncodeJSONMatchesStruct.
 type envelope struct {
 	action string
 
