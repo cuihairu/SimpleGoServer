@@ -189,6 +189,14 @@ func encodeMessage(t FrameType, streamId uint32, payload []byte, threshold int, 
 		threshold = MaxFrameSize
 	}
 	if len(payload) <= threshold {
+		// the nil backend is an allocation choice, not a behavior branch: both
+		// arms make() an exact-size buffer (cap == len), emit the same bytes,
+		// and fail the same way — the threshold clamp keeps ErrFrameTooLarge
+		// unreachable here, leaving ErrEmptyFrame as the only error either arm
+		// can return. Deleting this branch (sending b == nil down the pooled
+		// arm) leaves every assertion in the suite true, which is why parity is
+		// asserted on bytes rather than on which arm ran:
+		// TestPooledAndPlainEncodersAgree.
 		if b == nil {
 			buf, err := Encode(newFrame(t, streamId, payload))
 			if err != nil {

@@ -319,13 +319,16 @@ func TestPooledDecodeZeroLengthPayload(t *testing.T) {
 
 func TestPooledAndPlainEncodersAgree(t *testing.T) {
 	fake := withFakePools(t)
-	for _, size := range []int{1, 10, 1024, 70 * 1024, MaxFrameSize} {
+	// the sizes include both sides of the threshold: that boundary is where the
+	// single-buffer and fragmented shapes meet, so parity has to hold there too
+	const threshold = 64 * 1024
+	for _, size := range []int{1, 10, 1024, threshold, threshold + 1, 70 * 1024, MaxFrameSize} {
 		payload := bytes.Repeat([]byte("q"), size)
-		plain, err := encodeStreamFrames(REQUEST, 77, payload, 64*1024)
+		plain, err := encodeStreamFrames(REQUEST, 77, payload, threshold)
 		if err != nil {
 			t.Fatalf("encodeStreamFrames(%d): %v", size, err)
 		}
-		msg, err := encodeMessage(REQUEST, 77, payload, 64*1024, fake)
+		msg, err := encodeMessage(REQUEST, 77, payload, threshold, fake)
 		if err != nil {
 			t.Fatalf("encodeMessage(%d): %v", size, err)
 		}
@@ -520,6 +523,126 @@ func TestEncodeMessageFragmentsPooled(t *testing.T) {
 	msg.release(fake)
 	if len(fake.putPayloads) != 3 {
 		t.Fatalf("expected 3 pool puts, got %v", fake.putPayloads)
+	}
+}
+
+// TestEncodeMessageAtThresholdIsOneFrameNotAStream pins the inclusive boundary
+// in "payloads up to the threshold produce a single frame". The wire bytes are
+// identical on both sides of that choice, so nothing but the shape can be wrong
+// here -- and the shape is what ownership hangs on: buf/cell is the
+// single-buffer case, whose buffer is released *after* the write, while
+// bufs/cells is the fragmented case, recycled *before* it (see
+// FrameCodec.HandleWrite). A payload of exactly the threshold drifting into the
+// stream shape would therefore also move it to the other release order.
+func TestEncodeMessageAtThresholdIsOneFrameNotAStream(t *testing.T) {
+	const threshold = 8
+	for _, tc := range []struct {
+		name   string
+		size   int
+		single bool
+		frags  int
+	}{
+		{"one below the threshold", threshold - 1, true, 1},
+		{"exactly the threshold", threshold, true, 1},
+		{"one over the threshold", threshold + 1, false, 2},
+	} {
+		fake := withFakePools(t)
+		payload := bytes.Repeat([]byte("t"), tc.size)
+		msg, err := encodeMessage(REQUEST, 3, payload, threshold, fake)
+		if err != nil {
+			t.Fatalf("%s: encodeMessage(): %v", tc.name, err)
+		}
+		if tc.single {
+			// no bookkeeping slices at all: the shape the encodedMessage
+			// comment promises for "nearly all traffic"
+			if msg.buf == nil || len(msg.bufs) != 0 || cap(msg.bufs) != 0 || len(msg.cells) != 0 {
+				t.Fatalf("%s: single-buffer shape violated: buf set = %v, bufs %d/%d, cells %d",
+					tc.name, msg.buf != nil, len(msg.bufs), cap(msg.bufs), len(msg.cells))
+			}
+		} else if msg.buf != nil || len(msg.bufs) != tc.frags {
+			t.Fatalf("%s: got %d fragments with single buffer set = %v, want %d fragments and no buf",
+				tc.name, len(msg.bufs), msg.buf != nil, tc.frags)
+		}
+		buffers := msg.buffers()
+		if len(buffers) != tc.frags {
+			t.Fatalf("%s: %d buffers, want %d", tc.name, len(buffers), tc.frags)
+		}
+		if len(fake.getPayloads) != tc.frags {
+			t.Fatalf("%s: acquired %v, want %d buffer(s)", tc.name, fake.getPayloads, tc.frags)
+		}
+		// the shape choice must not touch the wire form: every fragment but
+		// the last carries FlagMore, and the payload reassembles
+		for i, buf := range buffers {
+			if more := buf[1]&FlagMore != 0; more != (i < len(buffers)-1) {
+				t.Fatalf("%s: buffer %d FlagMore = %v, want %v", tc.name, i, more, i < len(buffers)-1)
+			}
+		}
+		assembled, err := DecodeStreamed(bytes.NewReader(bytes.Join(buffers, nil)))
+		if err != nil {
+			t.Fatalf("%s: DecodeStreamed(): %v", tc.name, err)
+		}
+		if !bytes.Equal(assembled.Payload, payload) {
+			t.Fatalf("%s: reassembled %q, want %q", tc.name, assembled.Payload, payload)
+		}
+		// and it must not move the bytes away from the plain encoder either
+		plain, err := encodeStreamFrames(REQUEST, 3, payload, threshold)
+		if err != nil {
+			t.Fatalf("%s: encodeStreamFrames(): %v", tc.name, err)
+		}
+		if len(plain) != len(buffers) {
+			t.Fatalf("%s: plain encoder made %d buffers, pooled made %d", tc.name, len(plain), len(buffers))
+		}
+		for i := range plain {
+			if !bytes.Equal(plain[i], buffers[i]) {
+				t.Fatalf("%s: buffer %d differs from the plain encoder", tc.name, i)
+			}
+		}
+		msg.release(fake)
+		if !intsEqual(fake.getPayloads, fake.putPayloads) {
+			t.Fatalf("%s: released %v, want each acquire back in its own class %v",
+				tc.name, fake.putPayloads, fake.getPayloads)
+		}
+	}
+}
+
+// TestEncodeMessageSizesFragmentArraysExactlyOnce pins encodeMessage's "exact
+// fragment count up front" claim: both bookkeeping slices get their final size
+// in one make(), so no append ever reallocates. Acquire counts, buffer counts
+// and bytes all stay correct under a wrong precomputed count -- a truncated
+// count is silently repaired by append's growth -- so capacity is the only
+// thing that can see this, which is why it has its own test rather than being
+// folded into the parity checks. The divisible cases guard the other direction:
+// a count that overshoots would leave unused slots.
+func TestEncodeMessageSizesFragmentArraysExactlyOnce(t *testing.T) {
+	for _, tc := range []struct{ size, threshold, frags int }{
+		{9, 8, 2},       // 1.125 fragments -> 2
+		{16, 8, 2},      // exactly divisible
+		{20, 8, 3},      // undercounting to 2 would grow to cap 4
+		{1000, 100, 10}, // exactly divisible at a realistic size
+		{1001, 100, 11},
+	} {
+		fake := withFakePools(t)
+		msg, err := encodeMessage(REQUEST, 4, bytes.Repeat([]byte("z"), tc.size), tc.threshold, fake)
+		if err != nil {
+			t.Fatalf("size %d threshold %d: encodeMessage(): %v", tc.size, tc.threshold, err)
+		}
+		if len(msg.bufs) != tc.frags || len(msg.cells) != tc.frags {
+			t.Fatalf("size %d threshold %d: %d bufs / %d cells, want %d of each",
+				tc.size, tc.threshold, len(msg.bufs), len(msg.cells), tc.frags)
+		}
+		if cap(msg.bufs) != tc.frags || cap(msg.cells) != tc.frags {
+			t.Fatalf("size %d threshold %d: cap(bufs)=%d cap(cells)=%d, want exactly %d -- a smaller "+
+				"precomputed count is hidden by append growth, a larger one leaves dead slots",
+				tc.size, tc.threshold, cap(msg.bufs), cap(msg.cells), tc.frags)
+		}
+		if len(fake.getPayloads) != tc.frags {
+			t.Fatalf("size %d threshold %d: acquired %v, want %d buffers", tc.size, tc.threshold, fake.getPayloads, tc.frags)
+		}
+		msg.release(fake)
+		if !intsEqual(fake.getPayloads, fake.putPayloads) {
+			t.Fatalf("size %d threshold %d: released %v, want the acquired classes %v",
+				tc.size, tc.threshold, fake.putPayloads, fake.getPayloads)
+		}
 	}
 }
 
