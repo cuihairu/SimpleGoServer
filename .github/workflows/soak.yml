@@ -142,14 +142,19 @@ jobs:
           fi
           echo "has_log=true" >> "$GITHUB_OUTPUT"
           samples=$(grep -E 'churn |steady |steady-end|closed |reclaimed|did not return|goroutines grew|panic|error' "$log" || true)
-          total=$(printf '%s\n' "$samples" | grep -c . || true)
+          total=$(grep -c . <<<"$samples" || true)
           {
             echo "### Soak \`${GITHUB_SHA::7}\` — ${SOAK_SECONDS}s, ${ImageOS:-runner}, ${GITHUB_EVENT_NAME}"
             echo
             echo '```'
-            printf '%s\n' "$samples" | head -3
+            # Herestrings, never `printf | head`: Actions runs this step as
+            # `bash -e -o pipefail`, and head closing the pipe early makes the
+            # writer die of SIGPIPE — which pipefail promotes and -e obeys, so
+            # the reporting step itself went red on the first CI run. A herestring
+            # is a temp file: an early-exiting reader breaks nothing.
+            head -3 <<<"$samples"
             echo "    ... (${total} sample lines total, full log in the artifact)"
-            printf '%s\n' "$samples" | tail -12
+            tail -12 <<<"$samples"
             grep -E '^(ok |FAIL|--- PASS|--- FAIL)' "$log" || true
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
