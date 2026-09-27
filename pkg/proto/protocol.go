@@ -543,8 +543,7 @@ func (p *ProtocolHandler) handleRequestFrame(ctx handler.InboundContext, frame *
 		// the envelope marshals our own string-plus-raw-JSON types, which
 		// json.Marshal cannot fail on — there is deliberately no error path
 		errBody, _ := json.Marshal(&ErrorMessage{Error: err.Error()})
-		payload, _ := json.Marshal(&JSONMessage{Action: msg.Action, Data: errBody})
-		ctx.Write(newFrame(RESPONSE, streamId, payload))
+		ctx.Write(newFrame(RESPONSE, streamId, envelope{action: msg.Action, raw: errBody}.bytes()))
 		return
 	}
 	body, err := json.Marshal(resp)
@@ -554,8 +553,7 @@ func (p *ProtocolHandler) handleRequestFrame(ctx handler.InboundContext, frame *
 		ctx.Close(fmt.Errorf("proto: marshal response: %w", err))
 		return
 	}
-	payload, _ := json.Marshal(&JSONMessage{Action: msg.Action, Data: body})
-	ctx.Write(newFrame(RESPONSE, streamId, payload))
+	ctx.Write(newFrame(RESPONSE, streamId, envelope{action: msg.Action, raw: body}.bytes()))
 }
 
 func (p *ProtocolHandler) handleSubscribe(ctx handler.InboundContext, frame *Frame, subscribe bool) {
@@ -664,11 +662,11 @@ func (p *ProtocolHandler) Publish(topic string, payload any) (int, error) {
 }
 
 // mustJSON packs a topic and pre-encoded body into a JSONMessage payload.
-// The envelope holds our own string-plus-raw-JSON types, so the marshal
-// cannot fail and there is deliberately no error path.
+// The assembly is the shared envelope splice (see envelope.bytes), which
+// cannot fail and emits exactly what marshaling the struct emits — there
+// is deliberately no error path.
 func mustJSON(topic string, body []byte) []byte {
-	payload, _ := json.Marshal(&JSONMessage{Action: topic, Data: body})
-	return payload
+	return envelope{action: topic, raw: body}.bytes()
 }
 
 func (p *ProtocolHandler) removeSubscriber(topic string, conn net.Conn) {

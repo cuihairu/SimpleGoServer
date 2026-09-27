@@ -136,3 +136,34 @@ func TestDecodeJSONDataAliasesPayload(t *testing.T) {
 		t.Fatal("Data does not alias the frame payload: the zero-copy contract is broken")
 	}
 }
+
+// TestEnvelopeBytesMatchesStruct pins the shared envelope splice (used by
+// EncodeJSON, handleRequestFrame and mustJSON) to byte-for-byte equality
+// with marshaling the JSONMessage struct for pre-encoded bodies — the
+// response paths replaced their struct marshal with it, so equality is
+// what keeps the wire format unchanged.
+func TestEnvelopeBytesMatchesStruct(t *testing.T) {
+	actions := []string{"echo", "chat.send", "ac\"tion", "héllo", "", "a<b&c>d\\e"}
+	bodies := []json.RawMessage{
+		nil,
+		json.RawMessage(""),
+		json.RawMessage(`{"a":1,"b":[2,3]}`),
+		json.RawMessage(`"string body"`),
+		json.RawMessage(`42`),
+		json.RawMessage(`true`),
+		json.RawMessage(`null`),
+		json.RawMessage(`{"nested":{"deep":[1,{"x":"y"}]}}`),
+		json.RawMessage(`"quoted \" body"`),
+	}
+	for _, action := range actions {
+		for _, body := range bodies {
+			want, err := json.Marshal(&JSONMessage{Action: action, Data: body})
+			if err != nil {
+				t.Fatalf("marshal reference: %v", err)
+			}
+			if got := (envelope{action: action, raw: body}).bytes(); string(got) != string(want) {
+				t.Fatalf("envelope(%q, %s) = %s, want %s", action, body, got, want)
+			}
+		}
+	}
+}

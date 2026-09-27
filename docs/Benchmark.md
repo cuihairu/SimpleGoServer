@@ -278,6 +278,41 @@ A 轮（迭代数钉死）的结构指标与 B 轮的延迟参考并列；两轮
    机器上按同一协议复采——这正是本文档 2026-09-25 那轮"空载终采"建立的
    规矩。
 
+## 编解码热点实测优化（2026-09-27）
+
+对象：`pkg/proto/json.go` 的 JSON 信封组装。`EncodeJSON` 早已手拼信封
+（大载荷省掉一次全量拷贝），但服务端响应路径（`handleRequestFrame`、
+`mustJSON`）仍在走"先 marshal 业务体、再 marshal `JSONMessage` 结构体"
+两次编码——第二次纯粹是搬运已经编好的字节，还要付 marshaler 查找、
+装箱 struct 与 encoder 缓冲。改动是把手拼信封收敛成 `envelope.bytes`
+一个共享核心，三处调用方都走它；`TestEnvelopeBytesMatchesStruct` 把共享
+核心与结构体 marshal 钉死为逐字节相等，所以线格式不变。
+
+**采样协议**：Before 侧取 HEAD `0145254` 的独立 worktree，
+`BenchmarkReactorEchoThroughput -benchmem -benchtime 1000x -count 5`，
+两侧同一台机器、同一时间窗。分配数是结论，ns/op 只看有无回归。
+
+| 基准 | Before（5 轮） | After（5 轮） | 结论 |
+| --- | --- | --- | --- |
+| EchoThroughput allocs/op | 33, 33, 33, 33, 32（中位 33） | 32, 31, 31, 31, 31（中位 31） | **−2/次** |
+| EchoThroughput B/op | 1843, 1770, 1772, 1772, 1765 | 1768, 1712, 1706, 1725, 1708 | **−~60 B/次** |
+| EchoThroughput ns/op | 52~89 µs | 95~179 µs | 方向不定，噪声内，无结论 |
+| JSONEnvelope（小信封） | 15 allocs | 15 allocs | 同一份工作换了个位置，无变化 |
+| JSONEnvelopeString1MiB | 7 allocs | 7 allocs | 同上；时间两侧 min 相差 ~10%，噪声内 |
+
+读法：每次 echo 少约 2 次分配——响应路径省掉一次结构体 marshal
+（encoder 缓冲 + 装箱），请求路径不动。数字小，但它是确定性的：
+五轮中位各降 2，且无一轮 After 高于 Before 中位。延迟侧不作任何宣称。
+
+**被否掉的优化也记一笔**：`jsonPlainASCII` 曾被改写为 SWAR 逐词扫描
+（1 MiB 纯 ASCII 字符串是信封组装里整遍过字节的一趟，byte loop 看似可疑）。
+微基准（1 MiB 全 `"a"`，`-benchtime 100x -count 5`，取 min 抗负载毛刺）：
+byte loop 2.64 ms，SWAR 3.66 ms——**持平或更慢，已回退**。机制上也说得通：
+byte loop 在全 plain 输入下分支完全可预测，约 3 cycles/byte，已接近 memcpy
+速度；而 SWAR 每词仍要付一次 8 字节拷贝（`[]byte(s[i:i+8])` 虽被编译器优化
+到零分配，拷贝本身还在）加十余条位运算，省不下东西。结论：这处扫描保持
+byte loop，`json.go` 注释里留了这一条，免得后人重踩。
+
 ## 解读
 
 1. **吞吐随客户端数近线性扩展**：1→8 客户端吞吐 ×10，8→64 再 ×5——
