@@ -12,8 +12,9 @@ import (
 	"github.com/cuihairu/simplegoserver/pkg/proto"
 )
 
-// TestSoakMemoryStability is the long-run soak that docs/Benchmark.md
-// calls out as out of scope for the regular benchmark suite. It drives
+// TestSoakMemoryStability is the long-run soak that sits outside the
+// regular benchmark suite's scope (those measure throughput on short
+// runs; this one measures the time axis). It drives
 // the reactor through both load shapes — connection churn (accept /
 // serveConn / close recycling) and sustained long-lived traffic — and
 // samples goroutines and heap along the way. The assertions are
@@ -157,8 +158,8 @@ func TestSoakMemoryStability(t *testing.T) {
 
 // dumpGoroutines prints every live goroutine's stack at the failure site.
 //
-// A soak failure says only "something is still alive"; docs/NOTES.md §17's
-// 教训二 is that the counts cannot decide between the plausible causes (a
+// A soak failure says only "something is still alive"; the counts cannot
+// decide between the plausible causes (a
 // handler parked on a read nobody will close, a janitor that never got its
 // signal, a client read loop waiting on a dead peer) while the stacks can,
 // and a scheduled gate's log is the only scene available — the runner is gone

@@ -17,7 +17,7 @@ export default defineConfig({
   title: "SimpleGoServer",
   titleTemplate: false,
   description:
-    "两道后端面试题的设计文档站——主线是「为什么这样设计」：主从 Reactor 与自定义 TCP 帧协议（重题）、标准库 HTTP 服务的工程形态（轻题），每个关键选择都给出备选方案与放弃理由。",
+    "标准库写的内存键值 HTTP 服务的设计取舍：生命周期、超时矩阵、并发选型、错误映射，以及明确没做的事与生产环境的补法。",
   base,
   cleanUrls: true,
   lastUpdated: true,
@@ -26,44 +26,32 @@ export default defineConfig({
     siteTitle: "SimpleGoServer",
     logo: "/logo.svg",
     nav: [
-      { text: "题一 · Reactor 与自定义协议", link: "/q1-design" },
-      { text: "题二 · http-service", link: "/q2-design" },
-      {
-        text: "深入资料",
-        items: [
-          { text: "架构与取舍（DESIGN）", link: "/DESIGN" },
-          { text: "自定义协议说明（Proto）", link: "/Proto" },
-          { text: "需求分析（Analysis）", link: "/Analysis" },
-          { text: "性能基准（Benchmark）", link: "/Benchmark" },
-          { text: "知识点梳理（NOTES）", link: "/NOTES" },
-        ],
-      },
+      { text: "设计取舍", link: "/design" },
+      { text: "代码", link: "https://github.com/cuihairu/SimpleGoServer/tree/main/http-service" },
     ],
     sidebar: {
       "/": [
         {
-          text: "设计主线：为什么这样设计",
+          text: "http-service",
           items: [
-            { text: "总览：两题一套方法论", link: "/" },
+            { text: "设计取舍", link: "/design" },
+            { text: "服务边界", link: "/design#服务边界" },
+            { text: "分层与依赖方向", link: "/design#分层与依赖方向" },
             {
-              text: "题一：Reactor 与自定义协议",
-              link: "/q1-design",
+              text: "决策表",
+              collapsed: false,
+              items: [
+                { text: "生命周期", link: "/design#生命周期" },
+                { text: "HTTP 层", link: "/design#http-层" },
+                { text: "业务与存储", link: "/design#业务与存储" },
+                { text: "可测试性", link: "/design#可测试性" },
+              ],
             },
-            { text: "题二：http-service", link: "/q2-design" },
+            { text: "代码走查", link: "/design#代码走查" },
+            { text: "测试怎么落地", link: "/design#测试怎么落地" },
+            { text: "没做的事", link: "/design#没做的事" },
+            { text: "复现", link: "/design#复现" },
           ],
-        },
-        {
-          text: "题目一深入",
-          items: [
-            { text: "架构与取舍（DESIGN）", link: "/DESIGN" },
-            { text: "自定义协议说明（Proto）", link: "/Proto" },
-            { text: "需求分析（Analysis）", link: "/Analysis" },
-            { text: "性能基准（Benchmark）", link: "/Benchmark" },
-          ],
-        },
-        {
-          text: "复习与工程化",
-          items: [{ text: "知识点梳理（NOTES）", link: "/NOTES" }],
         },
       ],
     },

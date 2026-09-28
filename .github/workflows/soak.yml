@@ -9,12 +9,12 @@ name: Soak
 # untouched on purpose: the push gate stays fast and its density series stays
 # unpolluted by a job that takes ten minutes).
 #
-# docs/NOTES.md §17 applies verbatim here. A single pass has essentially no
+# A single pass has essentially no
 # statistical power against a low-probability failure (evidence is
 # 1-(1-p)^n; at n=1 that is nothing), so the value of this file is the *series*
 # it accumulates — and a series nobody can re-read after the runner is gone is
-# not a series. Hence -v plus a log artifact on every outcome: §17's 教训一 is
-# that truncated output destroys the only scene of the crime, and the soak's
+# not a series. Hence -v plus a log artifact on every outcome: truncated
+# output destroys the only scene of the crime, and the soak's
 # evidence is precisely its sample lines (goroutines / heapInuse / numGC along
 # the run), which vanish from a green run's default output. The job summary
 # gets the same lines so the trend is readable without downloading anything.

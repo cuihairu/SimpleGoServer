@@ -3,84 +3,71 @@ layout: home
 
 hero:
   name: SimpleGoServer
-  text: 两道后端面试题的设计决策档案
-  tagline: 一「重」一「轻」两道题：主从 Reactor + 自定义 TCP 帧协议，与标准库 only 的 HTTP 服务。本站主线是「为什么这样设计」——每个关键选择都列出备选方案、放弃理由，以及坦白的局限清单。参考实现全部可运行、可复现，CI 门禁在每次推送上验证其中的承诺。
+  text: 一个 Go 服务的设计取舍
+  tagline: 标准库写的内存键值服务，功能只有三个动词。真正花心思的是生命周期：错误怎么映射、超时怎么设、并发怎么锁、进程怎么死干净，以及哪些事明确没做、为什么。参考实现四百行，每个选择都留下备选和放弃的理由。
   image:
     src: /logo.svg
     alt: SimpleGoServer
   actions:
     - theme: brand
-      text: 题一 · 为什么这样设计
-      link: /q1-design
+      text: 读设计取舍
+      link: /design
     - theme: alt
-      text: 题二 · 为什么这样设计
-      link: /q2-design
-    - theme: alt
-      text: 架构与取舍（深读）
-      link: /DESIGN
+      text: 跳到没做的事
+      link: /design#没做的事
 
 features:
-  - icon: 🧭
-    title: 题一：Reactor 与自定义协议
-    details: 并发模型、协议格式、错误处理、资源防线、扩展点——五组设计决策，每组一张「备选与放弃理由」表，配关键代码走读与坦白局限清单。
-    link: /q1-design
+  - icon: ⚖
+    title: 四组决策表
+    details: 生命周期、HTTP 层、业务与存储、可测试性。每行给出当时的备选方案，以及为什么没选它——超时矩阵、并发三方案、错误映射的边界都在这里。
+    link: /design#决策表
     linkText: 看决策
-  - icon: 🎯
-    title: 题二：http-service
-    details: 「活得体面、死得干净」的工程形态：优雅关闭、四超时、三层单向依赖、锁选型、可测试性——每个选择都有为什么。
-    link: /q2-design
-    linkText: 看决策
-  - icon: 🏗
-    title: 架构与取舍（DESIGN）
-    details: 49 条决策汇总表、连接生命周期控制流走读、goroutine 与锁的完整清单——设计文档的深读层。
-    link: /DESIGN
-    linkText: 深入架构
-  - icon: 📡
-    title: 自定义协议说明（Proto）
-    details: 帧格式逐字段、五种交互模式（请求/响应、发布/订阅、流式、心跳、会话重连补发）、错误处理契约——线上字节格式的单一事实源。
-    link: /Proto
-    linkText: 读协议
-  - icon: 📊
-    title: 性能基准（Benchmark）
-    details: 帧编解码、端到端吞吐/并发扩展/连接churn、池化 A/B、热点优化实录，以及噪声底的量法——所有性能声明都有可复现的数据。
-    link: /Benchmark
-    linkText: 看数据
-  - icon: 🧠
-    title: 知识点梳理（NOTES）
-    details: 按面试考点组织：TCP 成帧、背压、零拷贝、GMP、channel、锁选型、GC 分配经济学、覆盖率门禁、flake 治理——每条先原理后实现。
-    link: /NOTES
-    linkText: 复习考点
+  - icon: ⌨
+    title: 四段代码走查
+    details: 关闭路径的两臂 select、状态码只在一处出现、多读一个字节的边界处理、锁内不拷贝的五行。附带每处容易被改坏的推理。
+    link: /design#代码走查
+    linkText: 走代码
+  - icon: ⚑
+    title: 没做的事
+    details: 键集无界、单实例、健康检查只有 liveness、无认证无 TLS。每条写清为什么现在不做，以及生产环境该怎么补。
+    link: /design#没做的事
+    linkText: 看局限
+  - icon: ⚙
+    title: 可复现
+    details: 四个源文件，单包语句覆盖率 100%，由 CI 逐包门禁维持。测试手段包括真信号打给自己、裸 TCP 构造确定卡死、goleak 抓残留 goroutine。
+    link: /design#测试怎么落地
+    linkText: 看测试
 ---
 
-## 两题一套方法论
+## 服务长什么样
 
-两道题规模悬殊，设计方法论是同一套。面试时可以先立这张框架再分述：
+单二进制 HTTP 服务，内存键值 API 加一个健康检查端点。值定义为「恰好一个 JSON 值」：不校验字段，不校验类型，字节原样存原样取。
 
-| 维度 | 题一：Reactor + 自定义协议 | 题二：http-service |
+| 请求 | 成功 | 失败 |
 | --- | --- | --- |
-| 分层 | 传输(reactor) / 成帧(codec) / 语义(protocol) / 业务(handler) | 传输(handler) / 业务(service) / 存储(store) |
-| 并发单位 | 每连接一个 goroutine，worker 分发 | net/http 内建每连接一 goroutine |
-| 生命周期 | accept → dispatch → serve → 分级关闭 | listen → serve → 信号 → drain |
-| 错误策略 | 三分类（网络/协议/应用）+ 分级关闭 | 哨兵错误 → 统一状态码映射 |
-| 资源防线 | MaxFrameSize/MaxStreamSize/缓存预算/空闲回收 | 四超时/请求体上限/优雅关闭超时 |
+| `PUT /kv/{key}` | 201 新建 / 200 覆盖 | 400 非法 · 413 超限 |
+| `GET /kv/{key}` | 200，回显当初的字节 | 400 非法 · 404 |
+| `DELETE /kv/{key}` | 204 | 400 非法 · 404 |
+| `GET /healthz` | 200 | — |
 
-核心原则一句话：**越靠近传输的错误越果断（断连），越靠近应用的错误越宽容（回错误响应）；所有无界的东西（队列、缓存、输入、等待）都必须有界**。
-
-## 复现验证
-
-```bash
-# 构建、静态检查、格式检查
-go build ./... && go vet ./... && gofmt -l .
-
-# 全量测试：单元 + 端到端集成 + 竞态检测 + goroutine 泄漏检测
-go test ./... -race
-
-# 性能基准：帧编解码 + 真实 TCP 端到端
-go test ./pkg/proto ./pkg/reactor -bench . -benchmem
-
-# 题二：单二进制 HTTP 服务
-go test ./http-service/ -race -count=2
-go run ./http-service
+```text
+main.go     装配：flag → Service(MemoryStore) → http.Server → 信号 → 排空
+handler.go  传输层：1.22 模式路由、错误→状态码映射（唯一一处）、写 JSON 响应
+service.go  业务层：key 校验、值的体积与合法性、哨兵错误（不认识 HTTP 词汇）
+store.go    存储缝：Store 接口 + RWMutex 内存实现（不认识业务规则）
 ```
 
-仓库全貌（题面原文、逐条验证命令、实现结构）见 [README](https://github.com/cuihairu/SimpleGoServer#readme)；五份深入文档（DESIGN / Proto / Analysis / Benchmark / NOTES）就住在 [docs/](https://github.com/cuihairu/SimpleGoServer/tree/main/docs) 里，本站即其在线版加两篇设计决策主线。
+依赖单向 `main → handler → Service → Store`。`Store` 是接口这件事已经在兑现：测试里的 `failingStore` 桩靠它注入故障，换存储时其他文件不用改。
+
+## 自己跑一遍
+
+```bash
+go test ./http-service/ -race -count=2
+go run ./http-service -addr 127.0.0.1:8080
+
+curl -i -XPUT 127.0.0.1:8080/kv/k -d '{"ok":true}'   # 201
+curl -i 127.0.0.1:8080/kv/k                          # 200
+kill -TERM <pid>                                      # 在途请求走完，退出码 0
+```
+
+题面原文、验收点与逐条验证命令见 [README](https://github.com/cuihairu/SimpleGoServer#readme)，实现代码在 [`http-service/`](https://github.com/cuihairu/SimpleGoServer/tree/main/http-service)。同一批面试题的 Reactor 与自定义帧协议那题已独立成 [JsonStream](https://github.com/cuihairu/jsonstream)。

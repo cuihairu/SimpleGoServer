@@ -52,9 +52,8 @@ jobs:
       # second — a shutdown registration race — was reproduced via
       # -cpu=1 -count=N and fixed by the registry gate. Repeating just
       # that package gives the next latent timing bug five chances per
-      # push to surface here instead of in someone's local run (the
-      # practice is written up in docs/NOTES.md §17). Stable toolchain
-      # only: the repeat measures flake density, not toolchain
+      # push to surface here instead of in someone's local run. Stable
+      # toolchain only: the repeat measures flake density, not toolchain
       # compatibility.
       - name: Flake tracking (reactor x5)
         if: matrix.go == 'stable'

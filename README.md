@@ -1,35 +1,14 @@
-# SimpleGoServer 面试题
+# SimpleGoServer
 
-**在线文档站**：<https://cuihairu.github.io/SimpleGoServer/> —— 两道题的设计决策主线（[题一：Reactor 与自定义协议](https://cuihairu.github.io/SimpleGoServer/q1-design) ｜ [题二：http-service](https://cuihairu.github.io/SimpleGoServer/q2-design)）："为什么这样设计"——每个关键选择的备选方案对比、关键代码走读与坦白的局限清单；DESIGN / Proto / Analysis / Benchmark / NOTES 五份深入文档的在线版也在站内。
+一道后端面试题的参考实现：**写一个简单 Go 服务**。内存键值 API（`PUT/GET/DELETE /kv/{key}`，值为单个 JSON 值）加一个 `GET /healthz` 健康检查端点，单二进制，只用标准库。功能刻意简单——这道题考的不是功能量，而是服务"**活得体面、死得干净**"的工程形态。
 
-本仓收录两道后端面试题，配套参考实现、设计讲解与逐条可复制的验证命令：
+同一批面试题的另一道（高性能非阻塞网络通信模型 + 自定义 TCP 帧协议）已独立成 [JsonStream](https://github.com/cuihairu/jsonstream)，题面、参考实现与协议文档都在那边。
 
-- **题目一：高性能非阻塞网络通信模型**（自定义 TCP 协议）——"重"题，考并发模型、协议设计与架构取舍，参考实现即本仓主体（`pkg/` + `internal/` + `cmd/` + `examples/`）。
-- **题目二：写一个简单 Go 服务**——"轻"题，考工程基本功（优雅关闭、超时、分层、可测试性），参考实现在 [http-service/](http-service/)，仅用标准库。
-
-两题共用同一结构：[面试题要求](#一面试题要求) → [设计与对应知识点](#二设计与对应知识点) → [实现与测试结果](#三实现与测试结果)。
+**在线文档站**：<https://cuihairu.github.io/SimpleGoServer/> —— 设计取舍、代码走读、没做的事与复现命令。
 
 ---
 
 ## 一、面试题要求
-
-### 题目一：高性能非阻塞网络通信模型（自定义 TCP 协议）
-
-设计一个高性能、可扩展的非阻塞网络通信模型，能够处理大量并发连接和数据传输。模型应支持 TCP 协议或基于 TCP 的自定义协议，并合理处理网络连接的生命周期管理、异常情况以及资源优化。
-
-具体要求九条：
-
-1. **模型架构**：设计事件驱动的服务器模型，异步处理客户端连接与数据交换；用 goroutine 和 channel 实现并发与非阻塞 I/O；支持多核处理。
-2. **协议支持**：支持 TCP；处理连接的建立、数据传输和优雅关闭；支持自定义协议。
-3. **通信格式**：设计自定义应用层协议封装和解析传输数据；支持 JSON 作为数据交换格式。
-4. **错误处理和恢复**：覆盖网络错误、协议错误和应用程序错误；致命错误时优雅关闭现有连接并记录日志。
-5. **性能测试与扩展性**：编写性能测试用例，模拟大量并发连接与数据传输，验证性能和扩展性。
-6. **可维护性和可扩展性**：代码结构与模块划分清晰；提供配置选项以适配不同部署环境和性能要求。
-7. **文档和测试**：编写单元测试和集成测试，确保代码质量。
-8. **负载均衡**：实现一种自适应的负载均衡策略，动态分配客户端连接到不同实例。
-9. **自定义协议**：自定义协议支持更多功能——请求/响应模式、发布/订阅模式或流式传输。
-
-### 题目二：写一个简单 Go 服务
 
 用 Go 标准库实现一个单二进制 HTTP 服务：内存键值 API（`PUT/GET/DELETE /kv/{key}`，值为单个 JSON 值）加一个 `GET /healthz` 健康检查端点。功能刻意简单——这道题考的不是功能量，而是服务"**活得体面、死得干净**"的工程形态。
 
@@ -47,95 +26,8 @@
 
 ## 二、设计与对应知识点
 
-### 题目一的设计与知识点
-
-**1. 模型架构——为什么是主从 Reactor 而不是 thread-per-connection。**
-并发模型的本质是把"等待 I/O"从执行线程中剥离：Go 的 netpoll 已经提供了事件驱动，应用层要做的是事件分发——一个 acceptor 接连接，一组 worker 挂已注册连接，读写互不阻塞。thread-per-connection 在连接数大时被内存与调度成本压垮；goroutine 虽然便宜，"每连接一个 goroutine"仍把连接生命周期和业务执行耦死，本模型把连接注册到固定 worker 上，为背压与公平性留出操作点。多核利用的手段：worker 数与 GOMAXPROCS 的关系、`SO_REUSEPORT` 多监听、goroutine 天然分布到各 P。
-
-**考察意图**：是否理解并发模型的本质——把"等待 I/O"从执行线程中剥离；能否区分"语言运行时已提供的事件驱动"与"应用层自己要做的事件分发"，以及多核利用的手段。
-
-- 合格：给出清晰的模型结构（监听 / 分发 / 执行各组件职责），说明连接读写互不阻塞，并提到多核利用方式（worker 数与 P 的关系、`SO_REUSEPORT`、goroutine 调度等）任一。
-- 加分：说清 Go netpoll 与自建 Reactor 的关系与取舍；有背压或公平性设计（单慢连接不饿死其他连接）；能论证为什么不采用 thread-per-connection。
-
-**2. 协议支持——连接生命周期是三段，不是一段。**
-对 TCP 而言"能用 Read 收数据"只是中段；前段要处理监听与接入（含超时拒绝），后段要区分主动关闭与被动关闭、EOF 与 RST，关闭时先停止写入、flush 后再 close。僵尸连接靠空闲超时/心跳检测清理，否则句柄与内存慢性泄漏。
-
-**考察意图**：对 TCP 生命周期的工程理解——是否只把一次 `Read` 当作一条完整消息，是否考虑半关闭、超时与僵尸连接。
-
-- 合格：建立、传输、优雅关闭三段都有处理；至少包含读写或空闲超时，关闭时先停止写入、flush 后再 close。
-- 加分：区分主动关闭与被动关闭、EOF 与 RST 的不同处理；有 keepalive/心跳检测死连接；有最大连接数或背压限制。
-
-**3. 通信格式——成帧与序列化必须分层。**
-TCP 是字节流，没有消息边界；长度前缀头（类型 + 长度 + 版本）解决粘包/半包，载荷用 JSON 承载结构化数据。两层各自演进：加帧类型不改编解码，载荷格式可替换（JSON 换 protobuf 时协议头不动）。单帧大小上限是防护网，防止一个恶意长度字段打爆内存。
-
-**考察意图**：能否把"传输成帧"与"应用序列化"分成两层设计，并处理粘包 / 半包问题。
-
-- 合格：帧结构至少包含类型与长度（或等价的边界机制）；载荷可 JSON 编解码，含类型或版本字段。
-- 加分：解释为何需要长度前缀（粘包/半包）；考虑版本字段与未知字段容忍以便演进；有单帧大小上限与非法载荷防护；能讨论 JSON 相对二进制格式的取舍。
-
-**4. 错误处理和恢复——先分类，再决定"续"还是"断"。**
-网络错误（连接坏了，关这条连接）、协议错误（对端说胡话，关连接并记录）、应用错误（业务拒绝，回错误帧继续用）——三类错误的处置完全不同。单连接的错误绝不能带崩进程；致命错误时按"停止 accept → 通知 → drain → 关闭"的顺序收尾，每步有超时兜底。
-
-**考察意图**：是否区分可恢复错误与致命错误；错误是否可观测；故障时能否不留下半死状态。
-
-- 合格：错误分类处理（网络 / 协议 / 应用），单连接错误不会导致进程 panic；致命错误时记录日志并有序关闭现有连接。
-- 加分：结构化日志、错误码或 trace id；优雅关闭有明确顺序与超时兜底（停止 accept → 通知 → drain → 强制关闭）；区分关闭单连接与关闭整个服务。
-
-**5. 性能测试与扩展性——用数据说话，而不是"感觉很快"。**
-可重复运行的基准（`go test -bench`），至少报并发连接数、吞吐、延迟中的两项；控制变量、多次采样、注明环境。数据拿来定位瓶颈：CPU 饱和、锁竞争、GC 停顿在火焰图上长得不一样。长稳测试与泄漏检查（goleak）是扩展性的时间维度——短跑快不代表跑得久。
-
-**考察意图**：是否会用数据说话——基准测试方法、指标定义与瓶颈定位，而不是"感觉很快"。
-
-- 合格：有可重复运行的测试（`go test -bench` 或压测脚本），报告并发连接数、吞吐、延迟等至少两项指标。
-- 加分：控制变量、多次采样并注明测试环境；能从数据定位瓶颈（CPU / 内存 / GC / 锁）并给出优化前后对比；包含长稳测试或资源泄漏检查。
-
-**6. 可维护性和可扩展性——扩展点用接口钉住，依赖方向定死。**
-入口/核心/协议/业务分目录；新增一种负载均衡策略、一种 handler、一种存储时不需要改动核心循环——靠的是扩展点接口化（balancer、handler pipeline、codec 可插拔）与单向依赖（实现层依赖抽象层）。配置外置（flag/文件/环境变量），核心逻辑零硬编码。
-
-**考察意图**：代码能否被他人接手；新增协议、调度策略或业务逻辑时是否需要改动核心循环。
-
-- 合格：目录分层清晰（入口 / 核心 / 协议 / 业务分离），配置外置（flag / 配置文件 / 环境变量），核心逻辑无硬编码。
-- 加分：关键扩展点有接口抽象（handler pipeline、balancer、codec 可插拔），依赖方向清晰，配备 lint / CI。
-
-**7. 文档和测试——测试是设计的副产品，文档是交接的底线。**
-单元测试覆盖编解码、分发等纯逻辑（table-driven），集成测试走真实连接验证组装是否正确；边界与异常用例（空载荷、超限帧、半包）比 happy path 更能暴露设计漏洞。文档至少让新人能跑起来：构建、运行、测试三件事各一条命令。
-
-**考察意图**：交付意识——测试是否覆盖关键路径，文档能否让新人跑起来。
-
-- 合格：单元测试覆盖编解码、分发等核心逻辑且可通过；说明构建、运行、测试方法。
-- 加分：有真实连接的端到端集成测试、table-driven 写法、边界与异常用例；文档含架构说明、协议说明与设计取舍。
-
-**8. 负载均衡——"自适应"要有指标支撑。**
-round-robin 是基线；"自适应"意味着按某个负载指标（最少连接、加权、响应延迟）动态调整，且增删成员要有一致性保障（去重注册、幂等注销、size 讲真话）。会话保持（IP hash）与均匀性是此消彼长的取舍。
-
-**考察意图**：理解多实例 / 多 worker 的连接分配策略，"自适应"是否有依据，而非写死 round-robin。
-
-- 合格：实现 round-robin 或随机策略之一，能在多 worker / 实例间分配连接，策略可通过接口替换。
-- 加分："自适应"有依据（最少连接、加权、按负载指标动态调整）；说明各策略的适用场景，以及平滑性与会话保持（IP hash）的取舍。
-
-**9. 自定义协议——在成帧之上做语义层。**
-请求/响应要解决关联（request id）、订阅推送要解决投递语义（离线补发、游标）、流式传输要解决分片重组（More 标志位）；心跳与断线重连（token/resume）是连接语义。设计时对照成熟协议（RSocket、WebSocket、MQTT）能少踩已知的坑。
-
-**考察意图**：在成帧之上设计语义层的能力——请求与响应的关联、订阅推送、流式传输，以及心跳、断线重连等连接语义。
-
-- 合格：实现请求/响应（带 request id 关联）或发布/订阅之一，帧类型可扩展。
-- 加分：覆盖多种通信模式，具备流控/背压、心跳与断线重连（token / resume）、协议版本协商；参考 RSocket / WebSocket 等成熟协议并说明取舍。
-
-### 题目二的设计与知识点
-
 **1. 优雅启动与关闭——SIGTERM 是承诺，不是自杀令。**
 部署系统（systemd、k8s）滚动重启时给进程发 SIGTERM，等它退出；超时后才强杀。所以信号的正确读法是"通知"：`signal.NotifyContext` 把 SIGINT/SIGTERM 变成 ctx 取消，主流程 select 在"信号到来"与"ListenAndServe 出错"之间，收到信号后调 `srv.Shutdown`（停止接收 → 排空在途请求 → 关 keep-alive），超时兜底防单个卡死的 handler 拖垮整个进程。退出码也要认真：干净退出 0，超时/异常 1——编排系统靠它判断滚动重启是否顺利。
-
-关键代码就一个 select：
-
-```go
-select {
-case err := <-errCh:            // 监听失败或被关闭
-    return report(err)
-case <-ctx.Done():              // SIGINT/SIGTERM
-    return drain(srv, timeout)  // Shutdown + 超时兜底
-}
-```
 
 **考察什么**：是否知道 net/http 默认对信号的行为是直接终止（在途请求被砍）；`Shutdown` 与 `Close` 的区别（排空 vs 立断）；退出码语义。
 
@@ -194,88 +86,6 @@ Go 的 map 不是并发安全的，并发读写不保护轻则 race、重则 `fa
 
 ## 三、实现与测试结果
 
-### 题目一：自定义协议服务（本仓主体）
-
-实现位置：
-
-```text
-cmd/               命令行入口（server / cli）
-examples/          可运行的完整示例（服务端 + 并发客户端）
-internal/
-  balancer/        负载均衡策略（七种，统一契约测试）
-  handler/         handler pipeline 实现（Netty 风格的传播语义）
-  executor/        任务执行器
-pkg/               核心抽象接口（balancer / executor / logger / options / scheduler），
-                   具体实现位于 internal，依赖方向 internal → pkg
-  reactor/         主从 Reactor 核心（accept、worker、连接注册、优雅关闭）
-  proto/           自定义帧协议（编解码、请求/响应、发布/订阅、流式分片、客户端）
-  handler/         handler 抽象接口
-  event/           事件循环抽象
-  channels/        NIO 风格的通道抽象（acceptor / selector）
-  utils/           通用工具
-scripts/           覆盖率门禁（check-coverage.sh 及其测试）
-docs/              设计与数据文档（DESIGN.md、NOTES.md、Analysis.md、Proto.md、Benchmark.md）
-config.example.yml 服务端配置示例（键位与 cmd/server 的 viper 绑定互锁）
-```
-
-测试结果（2026-09-24，本地与 CI 双 job 全绿）：
-
-- `go test ./... -race` 全部通过，含竞态检测与 goroutine 泄漏检测（goleak）。
-- 每个包的语句覆盖率 100%（含 `cmd/`、`internal/`、`examples/`），由
-  `scripts/check-coverage.sh` 逐包门禁、CI 强制。纯接口包（`pkg/event`）
-  无语句，按定义跳过。门禁跑测试时带 `-count=1`：`go test` 结果进缓存，
-  setup-go 默认恢复 GOCACHE，命中时命令报 `(cached)`、一个测试都不跑就
-  复用上一次的 profile——门禁会用旧证据冒充新证据（详见 NOTES §16）。
-- 覆盖率门禁自身有 13 个测试（`scripts/coverage_gate_test.go`）：门禁
-  "该失败时必须失败"比"全绿时通过"更重要，用合成 profile 精确构造缺口；
-  另有一条用 PATH 上的假 `go` 记录 argv，钉住 `-count=1` 这个调用点契约。
-- 模糊测试三目标累计约 320 万次执行零发现；另有 CI 挖掘门禁
-  `scripts/fuzz-smoke.sh`（每次推送 20s/靶，靶名由工具链 `go test -list`
-  逐包发现，崩了即失败并提示提交 Go 落盘的语料），门禁自身 10 个测试钉住
-  失败方向、命令形状（含"不得带 `-race`""不得是迭代数预算""靶必须在自己的
-  包里跑"）与发现机制本身（真 `go` 跑临时模块，钉住"形参名不是 f 的靶"和
-  "子包里的靶"也必须被发现——扫源码的正则会漏掉它们并假绿）。性能基准数据见
-  [docs/Benchmark.md](docs/Benchmark.md)。
-- 长稳测试（连接 churn + 长连接稳态，采样 goroutine 与内存）无泄漏，
-  数据见 [docs/Benchmark.md](docs/Benchmark.md) 长稳一节。
-
-验证命令（逐条可复制，要求 Go 1.22+）：
-
-```bash
-# 构建、静态检查、格式检查
-go build ./...
-go vet ./...
-gofmt -l .
-
-# 全量测试：单元 + 端到端集成 + 竞态检测 + goroutine 泄漏检测
-go test ./... -race
-
-# 覆盖率门禁：逐包比对语句覆盖率，任一包低于阈值即失败（CI 同款）
-# 阈值默认 100，与上面"每个包 100%"的声明一致；--threshold 可放宽
-./scripts/check-coverage.sh
-./scripts/check-coverage.sh --threshold 95
-
-# 跑通完整示例：终端 1 启动服务端，终端 2 启动并发客户端
-go run ./examples/echo-server
-go run ./examples/concurrent-client
-
-# 性能基准：帧编解码 + 真实 TCP 端到端吞吐 / 并发扩展 / 连接建立拆除
-go test ./pkg/proto ./pkg/reactor -bench . -benchmem
-
-# 模糊测试：普通 go test 只跑种子语料；门禁脚本给每个靶固定预算（CI 同款）
-./scripts/fuzz-smoke.sh            # 20s/靶；--list 只列靶，--fuzztime 5m 深挖
-go test ./pkg/proto -run '^$' -fuzz FuzzDecodeStream -fuzztime 30s   # 单靶手工挖
-
-# 长稳测试（SOAK=1 门控，CI 默认跳过；SOAK_SECONDS 可调时长）
-SOAK=1 go test ./pkg/reactor -run TestSoak -race -timeout 15m
-```
-
-命令行形态的服务端与协议客户端在 `cmd/server` 与 `cmd/cli`；更完整的可运行示例见 [examples/README.md](examples/README.md)。服务端配置外置：默认读取 `./config.yml`，`--config` 指定其他文件，同名键可被命令行 flag 覆盖；完整键位见 [config.example.yml](config.example.yml)。
-
-深入阅读：[在线文档站](https://cuihairu.github.io/SimpleGoServer/)（含下方全部文档与两篇"为什么这样设计"主线）｜ [设计文档：架构与取舍](docs/DESIGN.md) ｜ [技术知识梳理与考点](docs/NOTES.md) ｜ [设计取舍与需求分析](docs/Analysis.md) ｜ [自定义协议说明](docs/Proto.md) ｜ [性能基准](docs/Benchmark.md)。
-
-### 题目二：写一个简单 Go 服务（http-service/）
-
 实现位置——单目录 4 个源文件加 4 个测试文件，每层一文件，零第三方依赖：
 
 ```text
@@ -309,3 +119,5 @@ curl -si localhost:8080/kv/answer                            # 404
 
 # 终端 1 按 Ctrl+C（或 kill -TERM）：日志打出 "shutdown complete"，退出码 0
 ```
+
+深入阅读：[在线文档站](https://cuihairu.github.io/SimpleGoServer/)——四组决策表、代码走读与"没做的事"清单；题面的完整拆解也在站内 [设计取舍](https://cuihairu.github.io/SimpleGoServer/design) 一页。

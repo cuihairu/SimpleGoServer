@@ -59,8 +59,8 @@ func EncodeJSON(t FrameType, streamId uint32, action string, data any) (*Frame, 
 // JSONMessage struct through encoding/json — paying the marshaler lookup,
 // an escaped struct box and a clone of the encoder buffer per response just
 // to move bytes that were already encoded. Those two allocations are exactly
-// what disappeared: end-to-end echo went 32→31 allocs/op and −46 B/op, site
-// by site in Benchmark.md「编解码热点实测优化」. byte-for-byte equality with
+// what disappeared: end-to-end echo went 32→31 allocs/op and −46 B/op.
+// byte-for-byte equality with
 // the struct marshal is pinned by TestEncodeJSONMatchesStruct.
 type envelope struct {
 	action string
@@ -128,7 +128,7 @@ func (e envelope) bytes() []byte {
 // prototyped and measured at parity-or-slower on 1MiB plain strings
 // (the loop already runs at ~3 cycles/byte with predictable branches,
 // while SWAR still pays a copy per word), so the extra bit-tricks bought
-// nothing — see Benchmark.md「编解码热点实测优化」.
+// nothing and the prototype was reverted.
 func jsonPlainASCII(s string) bool {
 	for i := 0; i < len(s); i++ {
 		c := s[i]

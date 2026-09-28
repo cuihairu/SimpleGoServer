@@ -7,9 +7,9 @@ import (
 )
 
 // Value is one stored entry. json.RawMessage keeps the caller's bytes
-// verbatim — validated once on the way in, never re-encoded. This is
-// the same double-encoding trap the TCP service hit (its 1MiB Call
-// cost 42ms until RawMessage passthrough landed, see docs/Benchmark.md).
+// verbatim — validated once on the way in, never re-encoded. Decoding
+// and re-encoding a 1MiB value costs tens of milliseconds; passthrough
+// is the fix.
 type Value = json.RawMessage
 
 // Store is the persistence seam. Everything above it (service,
