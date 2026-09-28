@@ -29,7 +29,9 @@ const README = join(ROOT, "README.md");
 // 本站自己的线上地址：README 的"文档站入口"指向它，而它是本 workflow 正在
 // 发布的产物——首次部署前它必然 404，用它来校验是循环依赖，故跳过 HTTP
 // 检查（内链是否可达由上面的 docs/README 本地链接校验覆盖）。
-const SELF_PAGES_URL = "https://cuihairu.github.io/simplegoserver";
+// 注意大小写：Pages 项目站 URL 大小写敏感（小写形式实测 Site not found），
+// 必须用仓库名原样 SimpleGoServer。
+const SELF_PAGES_URL = "https://cuihairu.github.io/SimpleGoServer";
 
 // ---------- 工具 ----------
 

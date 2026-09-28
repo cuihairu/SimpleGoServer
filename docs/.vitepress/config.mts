@@ -1,13 +1,15 @@
 import { defineConfig } from "vitepress";
 
-// GitHub Pages 项目站挂在 /simplegoserver/ 下：CI 里从 GITHUB_REPOSITORY 推 base，
-// 本地 dev/preview 用 "/"，两边一套配置。（同款推导见 JsonStream 的站点。）
+// GitHub Pages 项目站挂在 /SimpleGoServer/ 下：CI 里从 GITHUB_REPOSITORY 推 base，
+// 本地 dev/preview 用 "/"，两边一套配置。（推导同 JsonStream 的站点，但**不**
+// toLowerCase——Pages 项目站的 URL 大小写敏感，必须用仓库名原样：
+// /simplegoserver/ 实测 "Site not found"，只有 /SimpleGoServer/ 可达。）
 const repository = process.env.GITHUB_REPOSITORY ?? "";
 const repositoryName = repository.split("/")[1] ?? "";
 const isUserOrOrgPagesRepo = repositoryName.endsWith(".github.io");
 const base =
   process.env.GITHUB_ACTIONS === "true" && repositoryName && !isUserOrOrgPagesRepo
-    ? `/${repositoryName.toLowerCase()}/`
+    ? `/${repositoryName}/`
     : "/";
 
 export default defineConfig({
