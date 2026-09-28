@@ -25,8 +25,9 @@ name: Soak
 # gate measures the orthogonal axis (resource reclamation over minutes). Adding
 # -race would alter the allocation rates under measurement without adding a new
 # class of evidence, and would slow the churn stage into measuring the
-# detector. Stable toolchain only, for the same reason §17 gives for the x5
-# repeat: this measures a time series, not toolchain compatibility.
+# detector. Stable toolchain only: this file accumulates a time series, and a
+# toolchain bump shifts allocation and scheduling baselines underneath it —
+# measuring toolchain deltas is not this gate's job.
 #
 # Coexistence with ci.yml, checked rather than assumed: ci.yml triggers on
 # push/PR only and never sets SOAK, so the soak skips inside its `go test ./...`

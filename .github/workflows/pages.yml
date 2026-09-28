@@ -39,8 +39,9 @@ jobs:
       - name: Build site
         run: pnpm build
       # build 的死链检查抓不到的两类由本步补位：跨页 #锚点（对 dist 渲染产物的
-      # id= 真值校验）与路径大小写（Pages 敏感、macOS 开发机不敏感，DESIGN/NOTES
-      # 这类大写页名是重点对象）。依赖上一步 build 产物，故必须排在其后。
+      # id= 真值校验）与路径大小写（Pages 敏感、macOS 开发机不敏感——仓库名
+      # SimpleGoServer 本身就是活例子，base 曾因 toLowerCase 全站资源 404）。
+      # 依赖上一步 build 产物，故必须排在其后。
       - name: Check doc links
         run: pnpm check:links
       # PR 只校验不部署：产物留给 push main 的部署 job
