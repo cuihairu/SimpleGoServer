@@ -1,5 +1,7 @@
 # SimpleGoServer 面试题
 
+**在线文档站**：<https://cuihairu.github.io/simplegoserver/> —— 两道题的设计决策主线（[题一：Reactor 与自定义协议](https://cuihairu.github.io/simplegoserver/q1-design) ｜ [题二：http-service](https://cuihairu.github.io/simplegoserver/q2-design)）："为什么这样设计"——每个关键选择的备选方案对比、关键代码走读与坦白的局限清单；DESIGN / Proto / Analysis / Benchmark / NOTES 五份深入文档的在线版也在站内。
+
 本仓收录两道后端面试题，配套参考实现、设计讲解与逐条可复制的验证命令：
 
 - **题目一：高性能非阻塞网络通信模型**（自定义 TCP 协议）——"重"题，考并发模型、协议设计与架构取舍，参考实现即本仓主体（`pkg/` + `internal/` + `cmd/` + `examples/`）。
@@ -270,7 +272,7 @@ SOAK=1 go test ./pkg/reactor -run TestSoak -race -timeout 15m
 
 命令行形态的服务端与协议客户端在 `cmd/server` 与 `cmd/cli`；更完整的可运行示例见 [examples/README.md](examples/README.md)。服务端配置外置：默认读取 `./config.yml`，`--config` 指定其他文件，同名键可被命令行 flag 覆盖；完整键位见 [config.example.yml](config.example.yml)。
 
-深入阅读：[设计文档：架构与取舍](docs/DESIGN.md) ｜ [技术知识梳理与考点](docs/NOTES.md) ｜ [设计取舍与需求分析](docs/Analysis.md) ｜ [自定义协议说明](docs/Proto.md) ｜ [性能基准](docs/Benchmark.md)。
+深入阅读：[在线文档站](https://cuihairu.github.io/simplegoserver/)（含下方全部文档与两篇"为什么这样设计"主线）｜ [设计文档：架构与取舍](docs/DESIGN.md) ｜ [技术知识梳理与考点](docs/NOTES.md) ｜ [设计取舍与需求分析](docs/Analysis.md) ｜ [自定义协议说明](docs/Proto.md) ｜ [性能基准](docs/Benchmark.md)。
 
 ### 题目二：写一个简单 Go 服务（http-service/）
 

@@ -37,3 +37,11 @@
 go.work
 go.work.sum
 .idea
+
+# VitePress 文档站：依赖与构建产物只在本地/CI 存在，永不入库
+#（pnpm install 与 vitepress build 都在仓库根跑，见 package.json 与
+# .github/workflows/pages.yml）
+node_modules/
+docs/.vitepress/dist/
+docs/.vitepress/cache/
+

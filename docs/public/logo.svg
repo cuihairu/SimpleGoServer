@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <!-- 主从 Reactor 的抽象标记：acceptor（中心）向四个 worker 分发连接 -->
+  <defs>
+    <linearGradient id="sgs-g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#00add8"/>
+      <stop offset="1" stop-color="#005f75"/>
+    </linearGradient>
+  </defs>
+  <g stroke="url(#sgs-g)" stroke-width="4" stroke-linecap="round" fill="none">
+    <path d="M50 50 L24 26"/>
+    <path d="M50 50 L78 22"/>
+    <path d="M50 50 L80 72"/>
+    <path d="M50 50 L22 76"/>
+  </g>
+  <circle cx="50" cy="50" r="14" fill="url(#sgs-g)"/>
+  <circle cx="24" cy="26" r="7" fill="#00add8"/>
+  <circle cx="78" cy="22" r="7" fill="#00add8"/>
+  <circle cx="80" cy="72" r="7" fill="#00add8"/>
+  <circle cx="22" cy="76" r="7" fill="#00add8"/>
+</svg>

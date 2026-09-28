@@ -1,0 +1,130 @@
+/*
+ * SimpleGoServer docs theme —— 结构承 JsonStream 的 VitePress 主题改造，
+ * brand 换成 Go 青 #00add8：亮色正文链接用加深一档的 #007d9a 保可读对比，
+ * 暗色用提亮的 #56c8e8。
+ *
+ * 关键特征（与 JsonStream 同一套 Mintlify 语汇）：
+ *  - 白底 + 5% 黑度边框分隔（不靠阴影/灰底）
+ *  - feature 卡片 16px 圆角、icon 用 brand-soft 底
+ *  - 按钮全 pill（9999px）
+ *  - 标题紧字距、正文 170% 行高
+ *  - brand 色只用于 CTA/hover/focus，不做大面积填充
+ */
+
+:root {
+  /* ---- brand：Go 青 ---- */
+  --vp-c-brand-1: #007d9a;
+  --vp-c-brand-2: #00add8;
+  --vp-c-brand-3: #005f75;
+  --vp-c-brand-soft: rgba(0, 173, 216, 0.14);
+
+  --vp-button-brand-bg: #00add8;
+  --vp-button-brand-hover-bg: #007d9a;
+  --vp-button-brand-active-bg: #005f75;
+  --vp-button-brand-border: transparent;
+
+  /* hero：名字渐变 + 大气渐变底 */
+  --vp-home-hero-name-color: transparent;
+  --vp-home-hero-name-background: linear-gradient(115deg, #005f75 8%, #00add8 52%, #6fd6ef 96%);
+  --vp-home-hero-image-background: linear-gradient(
+    135deg,
+    rgba(0, 173, 216, 0.26) 0%,
+    rgba(111, 214, 239, 0.1) 45%,
+    rgba(255, 255, 255, 0) 80%
+  );
+  --vp-home-hero-image-filter: blur(56px);
+
+  --vp-custom-outline: #00add8;
+  --vp-c-brand-inverse: #ffffff;
+
+  /* 分隔线用 5% 黑度（亮色） */
+  --vp-c-divider: rgba(0, 0, 0, 0.06);
+  --vp-c-gutter: rgba(0, 0, 0, 0.05);
+}
+
+.dark {
+  /* 暗色：brand 用提亮的 Go 青（暗底可读且与 logo 同源） */
+  --vp-c-brand-1: #56c8e8;
+  --vp-c-brand-2: #3db5d9;
+  --vp-c-brand-3: #7fd8ef;
+  --vp-c-brand-soft: rgba(86, 200, 232, 0.16);
+
+  --vp-button-brand-bg: #0096bd;
+  --vp-button-brand-hover-bg: #00add8;
+  --vp-button-brand-active-bg: #56c8e8;
+
+  --vp-home-hero-name-background: linear-gradient(115deg, #7fd8ef 8%, #56c8e8 52%, #bdeaf6 96%);
+  --vp-home-hero-image-background: linear-gradient(
+    135deg,
+    rgba(0, 173, 216, 0.22) 0%,
+    rgba(86, 200, 232, 0.08) 45%,
+    rgba(0, 0, 0, 0) 80%
+  );
+
+  --vp-custom-outline: #56c8e8;
+
+  /* 暗色：白 8% 分隔 */
+  --vp-c-divider: rgba(255, 255, 255, 0.08);
+  --vp-c-gutter: rgba(255, 255, 255, 0.06);
+}
+
+/* ---- feature 卡片（16px 圆角 + 分隔线边框 + brand-soft icon 底） ---- */
+.VPFeature {
+  border-radius: 16px;
+  border: 1px solid var(--vp-c-divider);
+  transition: border-color 0.25s;
+}
+.VPFeature:hover {
+  border-color: rgba(0, 173, 216, 0.35);
+}
+.dark .VPFeature:hover {
+  border-color: rgba(86, 200, 232, 0.35);
+}
+.VPFeature .icon {
+  border-radius: 16px;
+  background-color: var(--vp-c-brand-soft);
+  color: var(--vp-c-brand-1);
+}
+
+.VPButton {
+  border-radius: 9999px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+}
+
+/* ---- 标题紧字距 ---- */
+.vp-doc h1,
+.vp-doc h2,
+.VPDoc h1,
+.VPDoc h2 {
+  letter-spacing: -0.6px;
+}
+.vp-doc h1 {
+  letter-spacing: -0.8px;
+}
+
+/* ---- 正文阅读舒适度（中文取 1.7 行高） ---- */
+.vp-doc p,
+.vp-doc li {
+  line-height: 1.7;
+}
+
+/* ---- inline code：小圆角 ---- */
+.vp-doc code {
+  border-radius: 4px;
+}
+
+/* ---- 链接 hover 用 brand ---- */
+.vp-doc a {
+  text-decoration-color: rgba(0, 173, 216, 0.4);
+}
+.vp-doc a:hover {
+  color: var(--vp-c-brand-1);
+  text-decoration-color: var(--vp-c-brand-1);
+}
+
+/* ---- outline / sidebar 当前项：brand 指示 ---- */
+.VPDocOutlineItem .outline-link.level-2:hover,
+.VPDocOutlineItem .outline-link.level-3:hover {
+  color: var(--vp-c-brand-1);
+}
