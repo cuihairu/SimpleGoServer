@@ -17,23 +17,19 @@ hero:
       link: /design#没做的事
 
 features:
-  - icon: ⚖
-    title: 四组决策表
+  - title: 四组决策表
     details: 生命周期、HTTP 层、业务与存储、可测试性。每行给出当时的备选方案，以及为什么没选它——超时矩阵、并发三方案、错误映射的边界都在这里。
     link: /design#决策表
     linkText: 看决策
-  - icon: ⌨
-    title: 四段代码走查
+  - title: 四段代码走查
     details: 关闭路径的两臂 select、状态码只在一处出现、多读一个字节的边界处理、锁内不拷贝的五行。顺带写清每处为什么容易被改坏。
     link: /design#代码走查
     linkText: 走代码
-  - icon: ⚑
-    title: 没做的事
+  - title: 没做的事
     details: 键集无界、单实例、健康检查只有 liveness、无认证无 TLS。每条写清为什么现在不做，以及生产环境该怎么补。
     link: /design#没做的事
     linkText: 看局限
-  - icon: ⚙
-    title: 可复现
+  - title: 可复现
     details: 四个源文件，单包语句覆盖率 100%，由 CI 逐包门禁维持。测试手段包括真信号打给自己、裸 TCP 构造确定卡死、goleak 抓残留 goroutine。
     link: /design#测试怎么落地
     linkText: 看测试

@@ -79,6 +79,15 @@ export default defineConfig({
   },
   head: [
     ["link", { rel: "icon", type: "image/svg+xml", href: `${base}favicon.svg` }],
+    ["link", { rel: "preconnect", href: "https://fonts.googleapis.com" }],
+    ["link", { rel: "preconnect", href: "https://fonts.gstatic.com", crossorigin: "" }],
+    [
+      "link",
+      {
+        rel: "stylesheet",
+        href: "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap",
+      },
+    ],
     ["meta", { name: "theme-color", content: "#00add8" }],
     ["meta", { property: "og:type", content: "website" }],
     ["meta", { property: "og:locale", content: "zh-CN" }],
@@ -88,7 +97,7 @@ export default defineConfig({
       {
         property: "og:description",
         content:
-          "两道后端面试题的设计文档站——主线是「为什么这样设计」：每个关键选择都给出备选方案与放弃理由。",
+          "一个 Go 服务的设计取舍——主线是「为什么这样设计」：每个关键选择都有备选方案与放弃理由。",
       },
     ],
   ],

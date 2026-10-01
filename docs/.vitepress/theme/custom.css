@@ -12,6 +12,20 @@
  */
 
 :root {
+  /* Mintlify-inspired font families */
+  --vp-font: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --vp-font-mono: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+}
+
+.vp-doc {
+  font-family: var(--vp-font);
+}
+
+.vp-doc code, kbd, samp {
+  font-family: var(--vp-font-mono);
+}
+
+:root {
   /* ---- brand：Go 青 ---- */
   --vp-c-brand-1: #007d9a;
   --vp-c-brand-2: #00add8;
@@ -23,16 +37,15 @@
   --vp-button-brand-active-bg: #005f75;
   --vp-button-brand-border: transparent;
 
-  /* hero：名字渐变 + 大气渐变底 */
-  --vp-home-hero-name-color: transparent;
-  --vp-home-hero-name-background: linear-gradient(115deg, #005f75 8%, #00add8 52%, #6fd6ef 96%);
+  /* hero：实色名字（Mintlify 口径——标题不用渐变文字）+ 淡青底洗净 logo */
+  --vp-home-hero-name-color: #0d0d0d;
   --vp-home-hero-image-background: linear-gradient(
     135deg,
-    rgba(0, 173, 216, 0.26) 0%,
-    rgba(111, 214, 239, 0.1) 45%,
+    rgba(0, 173, 216, 0.14) 0%,
+    rgba(111, 214, 239, 0.06) 45%,
     rgba(255, 255, 255, 0) 80%
   );
-  --vp-home-hero-image-filter: blur(56px);
+  --vp-home-hero-image-filter: none;
 
   --vp-custom-outline: #00add8;
   --vp-c-brand-inverse: #ffffff;
@@ -53,11 +66,11 @@
   --vp-button-brand-hover-bg: #00add8;
   --vp-button-brand-active-bg: #56c8e8;
 
-  --vp-home-hero-name-background: linear-gradient(115deg, #7fd8ef 8%, #56c8e8 52%, #bdeaf6 96%);
+  --vp-home-hero-name-color: #ededed;
   --vp-home-hero-image-background: linear-gradient(
     135deg,
-    rgba(0, 173, 216, 0.22) 0%,
-    rgba(86, 200, 232, 0.08) 45%,
+    rgba(0, 173, 216, 0.16) 0%,
+    rgba(86, 200, 232, 0.06) 45%,
     rgba(0, 0, 0, 0) 80%
   );
 
@@ -70,6 +83,8 @@
 
 /* ---- feature 卡片（16px 圆角 + 分隔线边框 + brand-soft icon 底） ---- */
 .VPFeature {
+  padding: 24px;
+
   border-radius: 16px;
   border: 1px solid var(--vp-c-divider);
   transition: border-color 0.25s;
