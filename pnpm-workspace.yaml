@@ -8,3 +8,4 @@ allowBuilds:
 # vitepress 1.6.4 是 1.x 最新、peer 只认 vite ^5，故用 overrides 强制提升（build 实测兼容）。
 overrides:
   vite: ^6.4.3
+  source-map-js: 1.2.2
