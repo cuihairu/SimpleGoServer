@@ -1,3 +1,4 @@
+import { withMermaid } from "vitepress-plugin-mermaid";
 import { defineConfig } from "vitepress";
 
 // GitHub Pages 项目站挂在 /SimpleGoServer/ 下：CI 里从 GITHUB_REPOSITORY 推 base，
@@ -12,7 +13,7 @@ const base =
     ? `/${repositoryName}/`
     : "/";
 
-export default defineConfig({
+export default withMermaid(defineConfig({
   lang: "zh-CN",
   title: "SimpleGoServer",
   titleTemplate: false,
@@ -101,4 +102,4 @@ export default defineConfig({
       },
     ],
   ],
-});
+}))
