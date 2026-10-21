@@ -2,6 +2,8 @@
 
 # SimpleGoServer
 
+[![Status](https://img.shields.io/badge/status-in%20development-orange)](https://github.com/cuihairu/SimpleGoServer/releases)
+
 一道后端面试题的参考实现：**写一个简单 Go 服务**。内存键值 API（`PUT/GET/DELETE /kv/{key}`，值为单个 JSON 值）加一个 `GET /healthz` 健康检查端点，单二进制，只用标准库。功能刻意简单——这道题考的不是功能量，而是服务"**活得体面、死得干净**"的工程形态。
 
 同一批面试题的另一道（高性能非阻塞网络通信模型 + 自定义 TCP 帧协议）已独立成 [JsonStream](https://github.com/cuihairu/jsonstream)，题面、参考实现与协议文档都在那边。
