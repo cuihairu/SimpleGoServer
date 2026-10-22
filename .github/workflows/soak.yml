@@ -168,7 +168,7 @@ jobs:
       # click rather than needing an extra step to unpack.
       - name: Upload the full soak log
         if: always() && steps.summary.outputs.has_log == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: soak-log-${{ github.run_number }}-${{ github.sha }}
           path: ${{ runner.temp }}/soak.log
