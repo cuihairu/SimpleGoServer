@@ -1,111 +1,111 @@
-# http-service：设计取舍
+# http-service: design trade-offs
 
-参考实现在 [`http-service/`](https://github.com/cuihairu/SimpleGoServer/tree/main/http-service)，四个源文件。题面考的不是功能量，是服务的生命周期形态：怎么启动、怎么死干净、出错了说什么、能不能被测。下面每个关键选择都列出当时的备选和放弃它的理由。
+The reference implementation is in [`http-service/`](https://github.com/cuihairu/SimpleGoServer/tree/main/http-service) and consists of four source files. The exercise is not about feature count; it is about the shape of a service lifecycle: how it starts, how it dies cleanly, what it says when something fails, and whether it can be tested. Every key choice below records the alternative considered and why it was rejected.
 
-## 服务边界
+## Service boundary
 
-单二进制 HTTP 服务，内存键值 API 加一个健康检查端点。值的定义是「恰好一个 JSON 值」：不校验字段，不校验类型，字节原样存原样取。
+A single-binary HTTP service with an in-memory key-value API and a health endpoint. A value is "exactly one JSON value": fields and types are not inspected, and bytes are stored and returned as-is.
 
-| 请求 | 成功 | 失败 |
+| Request | Success | Failure |
 | --- | --- | --- |
-| `PUT /kv/{key}` | 201 新建 / 200 覆盖，body `{"status":"stored"}` | 400 key 或值非法；413 超过 `-max-bytes` |
-| `GET /kv/{key}` | 200，body 是当初存进去的字节 | 400；404 |
-| `DELETE /kv/{key}` | 204，无 body | 400；404 |
-| `GET /healthz` | 200，`{"status":"ok"}` | 无 |
+| `PUT /kv/{key}` | 201 created / 200 replaced, body `{"status":"stored"}` | 400 invalid key or value; 413 above `-max-bytes` |
+| `GET /kv/{key}` | 200, body is the original bytes | 400; 404 |
+| `DELETE /kv/{key}` | 204, no body | 400; 404 |
+| `GET /healthz` | 200, `{"status":"ok"}` | none |
 
-边界是题面给定的，但四条假设要写明，否则后面的取舍没有判断依据：
+The boundary comes from the prompt, but four assumptions must be explicit or the trade-offs have no basis:
 
-- **单实例、单进程、内存存储。** 重启即失是题面的设定。`Store` 是接口，`ctx` 透传到每一层，换远程存储时其他文件不动（见 [没做的事](#没做的事) 里补什么）。
-- **只用标准库。** 七条验收点里明写着这条。四条路由、一个存储，实现层没有引入框架的余地。
-- **部署在可信网络或反向代理之后。** 无认证无 TLS 是这个边界的直接后果。
-- **调用方是可信但可能出错。** 输入要校验（key 字符集、值是合法 JSON、体积有上限），但不为恶意攻击者设计：没有速率限制，没有配额，没有审计。
+- **One instance, one process, in-memory storage.** Losing data on restart is part of the prompt. `Store` is an interface and `ctx` flows through every layer, so a remote implementation changes no other file (see what production would add in [What is not here](#what-is-not-here)).
+- **Standard library only.** One of the seven acceptance points says so. Four routes and one store leave no room for a framework.
+- **Deployed on a trusted network or behind a reverse proxy.** No auth and no TLS follow directly from that boundary.
+- **Callers are trusted but fallible.** Input is validated (key character set, valid JSON value, size limit), but the service is not designed for malicious attackers: no rate limiting, quotas, or audit log.
 
-## 分层与依赖方向
+## Layers and dependency direction
 
 ```text
-main.go     装配：flag → Service(MemoryStore) → http.Server → 信号 → 排空
-handler.go  传输层：1.22 模式路由、错误→状态码映射（唯一一处）、写 JSON 响应
-service.go  业务层：key 校验、值的体积与合法性、哨兵错误（不认识 HTTP 词汇）
-store.go    存储缝：Store 接口 + RWMutex 内存实现（不认识业务规则）
+main.go     wiring: flags → Service(MemoryStore) → http.Server → signal → drain
+handler.go  transport: Go 1.22 pattern routing, error→status mapping (one place), JSON responses
+service.go  business: key validation, value size and validity, sentinel errors (no HTTP vocabulary)
+store.go    storage seam: Store interface + RWMutex in-memory implementation (no business rules)
 ```
 
-依赖单向 `main → handler → Service → Store`，没有反向引用。每层只认识下一层的抽象：handler 拿到的是哨兵错误而不是状态码枚举，Service 拿到的是 `Store` 接口而不是 `*MemoryStore`，store 只管字节。
+Dependencies run one way: `main → handler → Service → Store`, with no reverse references. Each layer knows only the next layer's abstraction: the handler receives sentinel errors rather than a status-code enum, the Service receives a `Store` interface rather than `*MemoryStore`, and the store only deals in bytes.
 
-这么切的实际收益有两个。一是响应契约只有一份：加一种错误要改的地方是 `service.go` 加一个哨兵、`handler.go` 的 `writeError` 加一个 case，路由函数永远不出现状态码。二是存储可以整体换掉而不牵动其他层——这不是为将来预留的抽象，测试里的 `failingStore` 桩现在就靠它注入故障。
+That division pays off twice. First, the response contract exists in one place: adding an error means adding a sentinel in `service.go` and a case in `handler.go`'s `writeError`; route functions never mention status codes. Second, storage can be replaced without touching other layers. This is not speculative abstraction for the future: the `failingStore` test double uses it today to inject failures.
 
-## 决策表
+## Decision tables
 
-### 生命周期
+### Lifecycle
 
-| 决策 | 备选 | 为什么这样选 |
+| Decision | Alternative | Why this choice |
 | --- | --- | --- |
-| `run(args []string) int` 函数化入口，`main` 只做 `os.Exit` 翻译 | 逻辑写在 `main` 里 | `go test` 不会替你调 `main`。函数化之后监听、收信号、排空、退出码这条链整条都能在测试里跑，退出码直接可断言 |
-| `signal.NotifyContext` 把 SIGINT/SIGTERM 变成 ctx 取消，信号被消费掉 | 原生 `signal.Notify` 收 channel | ctx 取消是可以 `select`、可以往下游传的事件。消费掉信号是为了让进程里其他组件不会各自装一份 handler 然后重复响应 |
-| `errCh` 缓冲 1 | 无缓冲 | `ListenAndServe` 的错误必须可投递，即使主流程已经走关闭分支。无缓冲时这个错误会丢或者把 goroutine 卡在发送上 |
-| 关闭超时后返回退出码 1 | 永远等 | 编排系统靠退出码判断这次滚动重启干不干净。无限等待的实际结局是被 SIGKILL，那比重启失败更难排查 |
-| 退出码三态：flag 错 2、启动失败或关闭超时 1、干净关闭 0 | 全部 0 / 全部 1 | flag 错是用法问题，启动失败和关闭超时是运行问题，干净关闭没有故事。合成一个数字就丢掉了区分能力 |
+| A function entry point `run(args []string) int`, with `main` only translating to `os.Exit` | Put the logic in `main` | `go test` will not call `main` for you. Once it is a function, listening, signal handling, draining, and exit codes can all run in tests, and the exit code is directly assertable. |
+| `signal.NotifyContext` turns SIGINT/SIGTERM into context cancellation and consumes the signal | Native `signal.Notify` with a channel | Context cancellation can be selected on and propagated downstream. Consuming the signal prevents other components from installing their own handlers and reacting twice. |
+| Buffered `errCh` of size 1 | Unbuffered | The `ListenAndServe` error must be deliverable even if the main flow has entered shutdown. Unbuffered, the error is either lost or the goroutine blocks on send. |
+| Return exit code 1 after a shutdown timeout | Wait forever | The orchestrator uses the exit code to tell whether a rolling restart was clean. Waiting forever ends in SIGKILL, which is harder to diagnose than a failed restart. |
+| Three exit-code states: flag error 2, startup failure or shutdown timeout 1, clean shutdown 0 | Everything 0 / everything 1 | A flag error is a usage problem; startup failure and shutdown timeout are runtime problems; a clean shutdown has no story. Collapsing them loses the distinction. |
 
-### HTTP 层
+### HTTP layer
 
-| 决策 | 备选 | 为什么这样选 |
+| Decision | Alternative | Why this choice |
 | --- | --- | --- |
-| Go 1.22 模式路由 `"PUT /kv/{key}"` | 手写 method switch / 引路由框架 | `ServeMux` 自带方法不匹配时的 405 和 `Allow` 头，自带 `r.PathValue` 取参。四条路由撑不起框架的依赖成本，而零依赖正是题面的约束 |
-| 四个超时全设，作用域递增（5s / 10s / 10s / 60s） | 只设读超时 / 都不设 | `net/http` 的默认值是零超时，这是隐患不是特性。开一个 socket 不发数据的客户端能把一个 goroutine 永久停在那儿。逐项理由见下面的超时矩阵 |
-| `io.LimitReader(body, max+1)` | `http.MaxBytesReader` / 不限 | 多读一个字节让「恰好等于上限」和「超了上限」变成可区分的两件事，错误分类干净。不限则攻击者可以用一个请求耗尽内存。`MaxBytesReader` 也能用，但它先写响应头再报错，超限这次请求已经占用了连接 |
-| 值的合法性用 `json.Valid` | `Unmarshal` 进 `any` / 完全不校验 | `json.Valid` 不分配目标对象，而且它检查的是「恰好一个值」，`1 2` 这种拼接体会被拒。完全不校验则把非法字节存进去，之后每次读都要重新处理这个坏值 |
-| 先判大小再判 JSON | 先 `json.Valid` | 超限的 body 不值得付解析成本。顺序反过来会让 1 GiB 的垃圾先被完整扫描一遍 |
-| key 按字节判定：长度 1–128，每字节落在 `'!'`–`'~'` | `strings.ContainsFunc` + Unicode 类别 / 交给调用方 | 逐字节判定没有分配也没有 Unicode 慢路径。这个字符集就是「可打印、不含空格」的准确表达，注释里写明了这个区间在 ASCII 里的含义 |
+| Go 1.22 pattern routing such as `"PUT /kv/{key}"` | Hand-written method switch / a router framework | `ServeMux` provides 405 and `Allow` on method mismatch and `r.PathValue` for parameters. Four routes cannot justify a dependency, and zero dependencies is the exercise constraint. |
+| Set all four timeouts with increasing scopes (5s / 10s / 10s / 60s) | Read timeout only / none | `net/http` defaults to zero timeouts, which is a hazard rather than a feature. A client that opens a socket and sends nothing can park a goroutine forever. See the timeout matrix below. |
+| `io.LimitReader(body, max+1)` | `http.MaxBytesReader` / no limit | Reading one extra byte makes "exactly at the limit" and "over the limit" distinguishable, which keeps error classification clean. No limit lets one request exhaust memory. `MaxBytesReader` works too, but it writes response headers before reporting the error, so the oversized request already owns the connection. |
+| Validate values with `json.Valid` | `Unmarshal` into `any` / no validation | `json.Valid` allocates no destination and checks for exactly one value, so concatenated values such as `1 2` are rejected. No validation stores bad bytes that must be reinterpreted on every read. |
+| Check size before JSON validity | Check `json.Valid` first | An oversized body does not deserve parsing cost. Reversing the order makes the service scan a 1 GiB junk body first. |
+| Validate keys byte by byte: length 1–128, each byte in `'!'`–`'~'` | `strings.ContainsFunc` with Unicode categories / delegate to callers | Byte-wise validation allocates nothing and avoids the Unicode slow path. The range is the precise expression of "printable, no spaces"; a comment documents what the range means in ASCII. |
 
-**超时矩阵。** 每个超时管一段区间，缺哪一段就漏掉哪一类卡死：
+**Timeout matrix.** Each timeout owns an interval; missing one leaves a class of stalls uncovered:
 
-| 超时 | 作用域 | 缺失后果 |
+| Timeout | Scope | Consequence if missing |
 | --- | --- | --- |
-| `ReadHeaderTimeout` 5s | 连接到请求头读完 | 开 socket 不发数据，goroutine 永久停车（slowloris 的原型） |
-| `ReadTimeout` 10s | 连接到请求体读完 | 慢速滴注 body，同样能耗死连接 |
-| `WriteTimeout` 10s | 响应写完 | 只设读不设写，响应写一半挂起就没人管 |
-| `IdleTimeout` 60s | keep-alive 请求之间 | 空闲连接一直占着 fd |
-| `-shutdown-timeout` 10s | 排空在途请求 | 单个卡死的 handler 拖着进程不退，最终被编排系统强杀 |
+| `ReadHeaderTimeout` 5s | Connection through request headers | A client opens a socket and sends nothing; the goroutine parks forever (the slowloris prototype). |
+| `ReadTimeout` 10s | Connection through request body | A slow-drip body can likewise starve a connection. |
+| `WriteTimeout` 10s | Through response completion | With reads but no writes, a half-written response can hang with nobody watching. |
+| `IdleTimeout` 60s | Between keep-alive requests | Idle connections hold file descriptors indefinitely. |
+| `-shutdown-timeout` 10s | Draining in-flight requests | One stuck handler holds the process until the orchestrator force-kills it. |
 
-`IdleTimeout` 明显大于 `ReadTimeout` 是有意的。空闲是正常状态，读超时防的是「开始了却不完成」。
+`IdleTimeout` being clearly larger than `ReadTimeout` is intentional. Idle is a normal state; the read timeout guards against "started but never finished."
 
-### 业务与存储
+### Business and storage
 
-| 决策 | 备选 | 为什么这样选 |
+| Decision | Alternative | Why this choice |
 | --- | --- | --- |
-| 哨兵错误 + `errors.Is` 映射，状态码只在 `writeError` 一处出现 | 字符串匹配 / 各路由自己写状态码 | 哨兵可组合、可 `errors.Is`/`As`，且状态码这种 HTTP 词汇不进入业务层。字符串匹配在错误文案被改一个字时就静默失效 |
-| 500 响应固定为 `{"error":"internal error"}`，真实原因进日志 | 原样返回 `err.Error()` | 驱动报错、内部地址、堆栈片段都是给操作者的信息，不是给调用方的。分级很便宜，漏掉的代价是信息泄露 |
-| `MemoryStore` 用 `RWMutex + map` | `sync.Map` / channel 化 actor | 见下面的三方案对比 |
-| 锁放在 Store 内部 | 锁上移到 Service 或 handler | 锁跟着实现走。换成远程存储时锁自然消失（远程协议自带串行化），业务层从来不知道锁存在 |
-| `Store` 三个方法都带 `ctx`，内存实现用 `_` 占位 | 只在需要的层带 ctx / 干脆不带 | 今天的内存实现没有取消语义，但签名先留好。换远程存储那天 handler 和 Service 一行不改，只需要给新实现补上超时和重试 |
-| `Value = json.RawMessage`，校验一次之后不再重编码 | `Unmarshal` 进结构体再 `Marshal` 出去 | 双重编码是本仓另一个服务踩过的坑：1 MiB 的调用往返曾花掉 42 ms，换成原样透传才降回来。这题没有理由再踩一次 |
-| `Put` 锁内不做防御性拷贝 | 拷一份进 map | 所有权约定是「交出后不可变」，调用方传进来的已经是独立切片。锁内拷贝只是把一次 O(n) 内存复制放在持锁的临界区里 |
-| `Put` 返回 `created` 用来区分 201 / 200 | 一律 200 | 一行成本换正确的 REST 语义，也让调用方能区分「新建」和「覆盖」 |
-| `DELETE` 键不存在返回 404 而不是 204 | 幂等地一律 204 | 这里选择让调用方能发现「删了个不存在的键」。如果这个 API 要挂在重试逻辑后面，幂等 204 更合适——判断依据是调用方会不会重试，而不是 REST 教条 |
-| `/healthz` 恒 200，探测本身做到最便宜 | 遍历依赖做深度探测 | 没有外部依赖时，「能回答请求」就是健康的完整定义。深度探测在依赖抖动时会把探针本身变成雪崩的一环 |
-| 日志用 `slog` 的 JSON handler 输出到 stderr | `fmt` / 文本日志 | 结构化日志能直接被采集，stderr 与服务输出分离，排障时不会和业务输出混在一起 |
+| Sentinel errors mapped with `errors.Is`, with status codes appearing only in `writeError` | String matching / each route writing its own status | Sentinels compose and support `errors.Is`/`As`, and HTTP vocabulary stays out of the business layer. String matching silently breaks when an error message changes by one character. |
+| 500 responses are always `{"error":"internal error"}`; the real cause goes to logs | Return `err.Error()` verbatim | Driver errors, internal addresses, and stack fragments are for operators, not callers. Redaction is cheap; leaking is not. |
+| `MemoryStore` uses `RWMutex + map` | `sync.Map` / a channel-based actor | See the three-way comparison below. |
+| Keep the lock inside the store | Move it into the Service or handler | The lock follows the implementation. With remote storage the lock disappears naturally because the protocol serializes access; the business layer never knows a lock exists. |
+| All three `Store` methods take `ctx`; the in-memory implementation uses `_` | Pass `ctx` only where needed / omit it | The in-memory implementation has no cancellation semantics today, but the signatures are ready. On the day remote storage arrives, the handler and Service do not change; the new implementation adds timeouts and retries. |
+| `Value = json.RawMessage`; after validation the value is never re-encoded | `Unmarshal` into a struct and `Marshal` back out | Double encoding has bitten another service in this repository: a 1 MiB call round trip took 42 ms until it passed bytes through unchanged. There is no reason to repeat that mistake here. |
+| `Put` makes no defensive copy inside the lock | Copy into the map | Ownership is "immutable after handoff"; the caller already passes an independent slice. Copying under the lock only moves an O(n) copy into the critical section. |
+| `Put` returns `created` to choose 201 / 200 | Always 200 | One line buys correct REST semantics and lets callers distinguish creation from replacement. |
+| `DELETE` on a missing key returns 404 rather than 204 | Always 204 (idempotent) | This API lets the caller discover that a key did not exist. If it were placed behind retry logic, idempotent 204 would be better. The deciding factor is whether callers retry, not REST dogma. |
+| `/healthz` always returns 200 and is as cheap as possible | Deep-check every dependency | With no external dependencies, "can answer a request" is the complete definition of healthy. Deep checks turn the probe into part of the avalanche when dependencies wobble. |
+| Log through `slog`'s JSON handler to stderr | `fmt` / text logs | Structured logs are directly ingestible, and stderr separates service output from diagnostics. |
 
-**三种并发安全方案。** 裸 map 的并发写是运行时 `fatal error`，进程直接死，连 race detector 的报告都没有，所以这里必须显式选一种：
+**Three concurrency-safe designs.** Concurrent writes to a bare map are a runtime `fatal error`: the process dies without even a race-detector report, so one design must be chosen explicitly:
 
-| 方案 | 适合的场景 | 本题的判断 |
+| Design | Fits | Verdict for this exercise |
 | --- | --- | --- |
-| `RWMutex + map` | 读写均衡，或者写不罕见 | 采纳。朴素实现最快，单锁不嵌套因此没有死锁面 |
-| `sync.Map` | 读多写少、键集离散、键只增不删 | 不采纳。KV 服务的写和读频率相当，`sync.Map` 的双 map 维护在这时是纯开销 |
-| channel 化 actor | 需要把复杂事务串行化 | 不采纳。单键点查走排队是纯开销，事务需求不存在 |
+| `RWMutex + map` | Balanced reads and writes, or writes are not rare | Adopted. The plain implementation is fastest, and a single non-nested lock has no deadlock surface. |
+| `sync.Map` | Read-heavy, sparse key set, keys only added | Rejected. A KV service reads and writes at comparable rates; maintaining two maps is pure overhead here. |
+| Channel-based actor | Complex transactions need serialization | Rejected. Point lookups would pay queueing overhead for transactional semantics that do not exist. |
 
-### 可测试性
+### Testability
 
-| 决策 | 备选 | 为什么这样选 |
+| Decision | Alternative | Why this choice |
 | --- | --- | --- |
-| 三层各测各的：handler 用 `httptest.NewRecorder` 直测，Service 表驱动，store 跑并发靶场 | 只写端到端 | `Recorder` 不占端口，微秒级。分层测试的失败信息直接指向出错的层，不会变成「请求返回了 500，去找」 |
-| 生命周期用真信号测：`syscall.Kill` 打给自己，断言退出码 | mock 信号通道 | 测的是部署时真正发生的事。`run` 已经在测试进程里装好信号处理器，`Kill` 打进去走的就是生产路径。mock 信号测的是 mock |
-| 每次生命周期测试末尾 `goleak.VerifyNone` | 只断言退出码 | 退出码 0 不代表没有后台 goroutine 残留。`Shutdown` 超时后仍挂着的 handler，只有泄漏检测能看见 |
-| `osExit` 做成包级变量，测试里替换 | 测 `run` 就够了 | `main` 只做一件事（把退出码翻译成 `os.Exit`），那就让这一行也有测试。代价是一个可替换的全局变量，收益是「翻译这一步」不会成为无人覆盖的代码 |
+| Test each layer separately: handlers with `httptest.NewRecorder`, Service with table-driven tests, store under concurrency | End-to-end tests only | `Recorder` uses no port and runs in microseconds. A layered failure points directly at the broken layer instead of "the request returned 500, go find out why." |
+| Test the lifecycle with real signals: `syscall.Kill` to self and assert the exit code | Mock the signal channel | This tests what actually happens in deployment. `run` installs the handler in the test process, so `Kill` follows the production path. Mocking signals tests the mock. |
+| Call `goleak.VerifyNone` at the end of every lifecycle test | Assert only the exit code | Exit code 0 does not prove no background goroutines remain. A handler still hanging after a `Shutdown` timeout is visible only to leak detection. |
+| Make `osExit` a package variable and replace it in tests | Testing `run` is enough | `main` does one thing (translate the exit code into `os.Exit`), so that line gets a test too. The cost is one replaceable global; the benefit is that the translation step is not uncovered code. |
 
-## 代码走查
+## Code walkthroughs
 
-### 关闭路径的两臂 select
+### The two-arm select on shutdown
 
-`http-service/main.go`：
+`http-service/main.go`:
 
 ```go
 ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -130,15 +130,15 @@ case <-ctx.Done():
 }
 ```
 
-`ListenAndServe` 总是返回非 nil 错误，但 `http.ErrServerClosed` 只可能来自 `Shutdown`，而代码里唯一的 `Shutdown` 调用就在 ctx 臂里。所以能走到 errCh 臂就一定是绑定端口失败，退出码 1 是准确的，不需要在错误值上再判断一次。这条推理写在了源码注释里，读者不用自己重推。
+`ListenAndServe` always returns a non-nil error, but `http.ErrServerClosed` can only come from `Shutdown`, and the only `Shutdown` call is in the context arm. Therefore reaching the `errCh` arm always means binding the port failed, so exit code 1 is accurate and the error value needs no second check. That reasoning is recorded in a source comment so readers do not have to reconstruct it.
 
-`Shutdown` 做三件事：停止接受新连接、等在途 handler 返回、关掉 keep-alive 连接。外层的 `WithTimeout` 把「某个 handler 卡住」从「进程不可杀」变成「deadline 到期」。这个超时是排空的有界保证，不是可选项。
+`Shutdown` does three things: stop accepting new connections, wait for in-flight handlers, and close keep-alive connections. The outer `WithTimeout` turns "one handler is stuck" into "the deadline expired" instead of "the process cannot be killed." That timeout is the bounded guarantee for draining, not an option.
 
-`defer stop()` 不能省：它让 `NotifyContext` 注册的信号处理器在 `run` 返回时摘掉，否则测试进程里连着跑几个用例之后，进程会持续吞掉自己的 SIGTERM。
+`defer stop()` is not optional: it removes the signal handler registered by `NotifyContext` when `run` returns. Without it, a test process that runs several cases keeps swallowing its own SIGTERM.
 
-### 状态码只在一处出现
+### Status codes in exactly one place
 
-`http-service/handler.go`：
+`http-service/handler.go`:
 
 ```go
 func (h *handler) writeError(w http.ResponseWriter, err error) {
@@ -159,13 +159,13 @@ func (h *handler) writeError(w http.ResponseWriter, err error) {
 }
 ```
 
-每个哨兵错误恰好对应一个状态码，`ErrKeyInvalid` 和 `ErrValueInvalid` 合并到 400 是有意的：调用方能做的补救都是「改请求」。落到 500 的分支把错误详情换成固定文案再写进响应体，同时把真实错误交给 logger——响应给调用方，日志给操作者，两者内容不同是设计而不是疏漏。
+Each sentinel maps to exactly one status code. `ErrKeyInvalid` and `ErrValueInvalid` share 400 intentionally: the caller's remedy is the same in both cases, change the request. The 500 branch replaces details with a fixed message in the response and sends the real error to the logger. Different content for callers and operators is design, not omission.
 
-写错误响应的顺序是「先定状态码，再写 header，最后写 body」。一旦 header 写出去了就不能改，所以 `writeJSON` 里的顺序是设置 Content-Type、`WriteHeader`、`Encode`，没有能反悔的余地。
+The write order is "choose the status, write headers, write the body." Once headers are out they cannot change, so `writeJSON` sets Content-Type, calls `WriteHeader`, then encodes, with no room to reconsider.
 
-### 多读一个字节
+### One byte over the boundary
 
-`http-service/service.go`：
+`http-service/service.go`:
 
 ```go
 raw, err := io.ReadAll(io.LimitReader(body, s.maxValue+1))
@@ -181,13 +181,13 @@ if !json.Valid(raw) {
 return s.store.Put(ctx, key, Value(raw))
 ```
 
-只读 `max` 字节的话，一个正好 1 MiB 的合法值和一个 10 GiB 的值读出来长度一样，没法分别回答 200 和 413。读 `max+1` 字节之后，`len(raw) > max` 就是干净的越界信号，多出来的那一字节是判断成本，不是浪费。
+Reading only `max` bytes makes a valid value exactly 1 MiB and a 10 GiB body look the same length, so the service cannot answer 200 versus 413. Reading `max+1` bytes makes `len(raw) > max` a clean overflow signal; the extra byte is the cost of distinguishing them, not waste.
 
-`json.Valid` 之后紧接着 `Value(raw)`，中间没有任何 `Unmarshal` 再 `Marshal`。读进来的字节被 `LimitReader` 复制到 `raw` 这个独立切片里，交给 store 之后所有权转移，store 不再碰它。整条路径上一次编码都没有。
+`json.Valid` is followed immediately by `Value(raw)`, with no `Unmarshal`/`Marshal` in between. `LimitReader` copies the incoming bytes into the independent `raw` slice, ownership transfers to the store, and the store never mutates it. The whole path performs zero encodes.
 
-### 锁内的五行
+### Five lines inside the lock
 
-`http-service/store.go`：
+`http-service/store.go`:
 
 ```go
 func (m *MemoryStore) Put(_ context.Context, key string, v Value) (bool, error) {
@@ -199,57 +199,55 @@ func (m *MemoryStore) Put(_ context.Context, key string, v Value) (bool, error) 
 }
 ```
 
-写锁、判存在、赋值、返回新建标记，一次临界区完成，没有嵌套锁也没有持锁期间的 I/O。`created` 用赋值前的一次查找得到，比「先 `Get` 再 `Put`」少一次加锁，也避免了两次操作之间状态被别人改掉。
+The critical section contains only the map lookup and assignment. A defensive copy would turn an O(n) allocation into part of the locked region for no safety gain, because the ownership contract is that the caller hands over an independent immutable slice. The boolean return is computed before unlocking and carries the 201/200 distinction out without a second lookup.
 
-`v` 不拷贝是因为所有权写在了接口注释里：调用方交出之后不再修改。`ctx` 写成 `_ context.Context` 是同一个思路的反面——现在用不上，但接口签名要预留，否则换存储时改的是所有调用方。
+## Testing in practice
 
-## 测试怎么落地
+The tests do not just assert "it works"; they cover three specific claims: each layer's error mapping, a real-signal graceful shutdown, and leak-free completion. The concrete techniques are:
 
-题面要求「各层可独立测试」和「有真信号驱动的优雅关闭端到端测试」，落到具体手段：
-
-| 层 | 手段 | 覆盖的场景 |
+| Layer | Technique | Scenarios covered |
 | --- | --- | --- |
-| Service | 表驱动，无 I/O | key 字符集与长度的边界矩阵；值不是 JSON、`1 2` 这类拼接体、超限；`failingStore` 桩注入的读失败、删除不存在、写入错误 |
-| handler | `httptest.NewRecorder` 直测 | 三条路由的成功响应与状态码；每个哨兵到状态码的映射；内部错误文本不出现在响应里 |
-| store | `-race` 下的并发读写 | 多 goroutine 同时读写同一个 map，覆盖的是「忘了加锁」这类问题——`go test -race` 会当场报出来 |
-| 生命周期 | `run()` + 真信号 + `goleak` | 端口被占用返回 1；flag 错误返回 2；`main` 把退出码翻译成 `os.Exit`；关停超时返回 1；完整生命周期——监听、应答真请求、真 SIGTERM、排空、退出 0、之后拒绝新连接 |
+| Service | Table-driven, no I/O | Key character-set and length boundaries; non-JSON values, concatenated values such as `1 2`, oversized values; read failures, deletes of missing keys, and write errors injected by `failingStore`. |
+| handler | `httptest.NewRecorder` directly | Success responses and status codes for all three routes; mapping from every sentinel to a status; internal error text never appears in the response. |
+| store | Concurrent reads and writes under `-race` | Multiple goroutines touching the same map, which catches "forgot to lock" immediately under `go test -race`. |
+| lifecycle | `run()` + real signals + `goleak` | Occupied port returns 1; bad flags return 2; `main` translates the exit code to `os.Exit`; shutdown timeout returns 1; full lifecycle of listen, serve a real request, real SIGTERM, drain, exit 0, then refuse new connections. |
 
-关停超时那个用例值得单说：它用裸 TCP 连上之后只写半个 body，靠 `Expect: 100-continue` 让 handler 确定停在 `ReadAll` 上，再打 SIGTERM。这样构造出来的卡死是确定的，不是靠 sleep 赌出来的。测试断言的是退出码 1，也就是「排空没排干净，进程如实报告」。
+The shutdown-timeout case deserves a note. It opens a raw TCP connection, writes half a body, uses `Expect: 100-continue` so the handler deterministically blocks in `ReadAll`, then sends SIGTERM. That stall is constructed, not gambled on with sleeps. The assertion is exit code 1: draining did not finish and the process reports that honestly.
 
-`http-service` 这个包的语句覆盖率是 100%，但这个数字本身不是目标。删掉一个测试或者新增一个错误分支，`go test` 依然全绿，README 里那句 100% 就变成无人验证的口头禅。真正维持它的是 [`scripts/check-coverage.sh`](https://github.com/cuihairu/SimpleGoServer/blob/main/scripts/check-coverage.sh)：CI 在每个推送上按包检查覆盖率，低于 100% 即失败。门禁的单位是包而不是仓库总和，因为总和会让大包掩护小包。
+The `http-service` package has 100% statement coverage, but the number is not the goal. Delete a test or add an error branch and `go test` still passes; the 100% line in the README would become an unverified slogan. What maintains it is [`scripts/check-coverage.sh`](https://github.com/cuihairu/SimpleGoServer/blob/main/scripts/check-coverage.sh): CI checks coverage per package on every push and fails below 100%. The unit is the package, not the repository total, because a total lets large packages hide small ones.
 
-## 没做的事
+## What is not here
 
-每条都写了「为什么现在不做」和「生产环境补什么」。
+Each entry states why it is out of scope now and what production would add.
 
-- **数据只在内存里，重启即失。** 题面给定。补法是写一个 `Store` 实现（Redis、Postgres、或者落盘的 BoltDB），并给远程实现补上超时与重试——签名的缝已经留好了，但要清楚接口带 `ctx` 不等于实现了取消。
-- **键集无界。** 单个值有 1 MiB 上限（`-max-bytes` 可调），但 map 的条目数没有上限，写入速率也没有配额。持续写入可以让内存一直涨到进程被 OOM killer 干掉。生产环境需要条目数上限、TTL 淘汰或 LRU，题面只要求了三个动词，克制本身是这道题的考点。
-- **单实例，没有水平扩展。** 没有多副本，没有副本间一致性。KV 语义下要加实例，第一步一定是把存储外置，第二步才谈得上无状态扩容。
-- **`/healthz` 只有 liveness 语义。** 恒 200 只说明进程能应答。接上外部依赖之后要拆成两个探针：liveness 判断「要不要重启我」，readiness 判断「要不要给我导流量」。把两者合成一个探针是常见的事故源。
-- **没有认证，没有 TLS。** 补的位置在 handler 之前加一层中间件，或者交给反向代理。三层结构不需要为此改动。
-- **`json.Valid` 不是模式校验。** 值内部是什么结构，服务不关心也不该关心：这是存字节的 KV，不是文档数据库。真要校验字段，就该在 Service 层加一层 schema，那是另一个量级的需求。
-- **没有 TTL、事务、列举接口。** 题面只要求 `PUT`/`GET`/`DELETE`。列举接口是第一个危险的需求——它天然需要分页、游标和排序，键集无界的问题会在这里第一次真正疼起来。
-- **单把 `RWMutex` 是扩展上限。** 读写都走同一把锁的写侧，QPS 上来之后瓶颈清晰可见。生产形态是分片 map（按 key 哈希分 N 把锁）或换存储结构，取决于读写的实际比例。
-- **退出码契约依赖编排系统真的看它。** systemd、k8s 会据此判断滚动重启是否顺利，本地裸跑时它只是一个退出码。这是运行假设，不是缺陷，但它需要被部署配置兑现。
+- **Data lives only in memory and is lost on restart.** Given by the prompt. The fix is a `Store` implementation (Redis, Postgres, or on-disk BoltDB) plus timeouts and retries for the remote implementation. The interface seam is ready, but a `ctx` parameter in the signature does not mean cancellation is implemented.
+- **The key set is unbounded.** A single value is capped at 1 MiB (`-max-bytes` adjustable), but the number of map entries and the write rate have no quota. Sustained writes can grow memory until the OOM killer ends the process. Production needs an entry cap, TTL eviction, or LRU; the prompt asked for three verbs, and restraint is part of the exercise.
+- **One instance, no horizontal scaling.** No replicas, no cross-replica consistency. To add instances under KV semantics, externalize storage first and only then discuss stateless scaling.
+- **`/healthz` has only liveness semantics.** Always returning 200 only proves the process can answer. Once external dependencies exist, split it into two probes: liveness asks "should I restart this?" and readiness asks "should traffic reach this?" Combining them is a common source of incidents.
+- **No auth, no TLS.** Add middleware before the handler or delegate to a reverse proxy. The three-layer structure does not need to change.
+- **`json.Valid` is not schema validation.** The service neither knows nor should know the structure inside a value: this is a byte KV store, not a document database. Real field validation belongs in a Service-layer schema and is a different order of requirement.
+- **No TTL, transactions, or listing endpoint.** The prompt requires only `PUT`/`GET`/`DELETE`. Listing is the first dangerous request: it naturally needs pagination, cursors, and ordering, and the unbounded key set starts to hurt there.
+- **A single `RWMutex` is the scaling ceiling.** Both reads and writes take the same lock. At higher QPS the bottleneck is obvious. Production would shard the map by key hash or change the storage structure, depending on the real read/write ratio.
+- **The exit-code contract assumes the orchestrator observes it.** systemd and Kubernetes use it to judge a rolling restart; a bare local run sees only a number. That is an operational assumption, not a defect, but deployment configuration must honor it.
 
-## 复现
+## Reproduce
 
 ```bash
-# 构建、静态检查、格式检查
+# Build, static checks, formatting
 go build ./... && go vet ./... && gofmt -l .
 
-# 本服务的测试：单元 + 端到端 + 竞态 + 泄漏检测
+# This service: unit + end-to-end + race + leak detection
 go test ./http-service/ -race -count=2
 
-# 跑起来
+# Run it
 go run ./http-service -addr 127.0.0.1:8080
 curl -i -XPUT 127.0.0.1:8080/kv/k -d '{"ok":true}'   # 201
-curl -i 127.0.0.1:8080/kv/k                          # 200，回显原字节
+curl -i 127.0.0.1:8080/kv/k                          # 200, original bytes
 curl -i 127.0.0.1:8080/healthz                       # 200
 ```
 
-优雅关闭可以手动看：另开一个终端发请求的同时 `kill -TERM`，在途请求会走完，进程以 0 退出。
+To watch graceful shutdown, send requests from another terminal and `kill -TERM` the process: in-flight requests finish and the process exits 0.
 
-## 题一去哪了
+## Where did the first exercise go?
 
-同一批面试题里的另一道（主从 Reactor + 自定义 TCP 帧协议）已经独立成库：[JsonStream](https://github.com/cuihairu/jsonstream)，它的[架构与取舍文档](https://github.com/cuihairu/jsonstream/blob/main/docs/DESIGN.md)里有那题的设计决策。本仓剩下的实现代码仍可运行，但文档站只讲这一道题。
+The other exercise from the same interview set (a master/worker Reactor plus a custom TCP framing protocol) is its own repository: [JsonStream](https://github.com/cuihairu/jsonstream). Its [architecture and trade-off document](https://github.com/cuihairu/jsonstream/blob/main/docs/DESIGN.md) records those decisions. The remaining implementation in this repository still runs, but this documentation site covers only the KV exercise.

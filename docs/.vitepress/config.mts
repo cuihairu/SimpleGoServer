@@ -1,10 +1,6 @@
 import { withMermaid } from "vitepress-plugin-mermaid";
 import { defineConfig } from "vitepress";
 
-// GitHub Pages 项目站挂在 /SimpleGoServer/ 下：CI 里从 GITHUB_REPOSITORY 推 base，
-// 本地 dev/preview 用 "/"，两边一套配置。（推导同 JsonStream 的站点，但**不**
-// toLowerCase——Pages 项目站的 URL 大小写敏感，必须用仓库名原样：
-// /simplegoserver/ 实测 "Site not found"，只有 /SimpleGoServer/ 可达。）
 const repository = process.env.GITHUB_REPOSITORY ?? "";
 const repositoryName = repository.split("/")[1] ?? "";
 const isUserOrOrgPagesRepo = repositoryName.endsWith(".github.io");
@@ -13,71 +9,104 @@ const base =
     ? `/${repositoryName}/`
     : "/";
 
+const enTheme = {
+  siteTitle: "SimpleGoServer",
+  logo: "/logo.svg",
+  nav: [
+    { text: "Design", link: "/design" },
+    { text: "Code", link: "https://github.com/cuihairu/SimpleGoServer/tree/main/http-service" },
+  ],
+  sidebar: {
+    "/": [
+      {
+        text: "http-service",
+        items: [
+          { text: "Design trade-offs", link: "/design" },
+          { text: "Service boundary", link: "/design#service-boundary" },
+          { text: "Layers and dependencies", link: "/design#layers-and-dependency-direction" },
+          {
+            text: "Decision tables",
+            collapsed: false,
+            items: [
+              { text: "Lifecycle", link: "/design#lifecycle" },
+              { text: "HTTP layer", link: "/design#http-layer" },
+              { text: "Business and storage", link: "/design#business-and-storage" },
+              { text: "Testability", link: "/design#testability" },
+            ],
+          },
+          { text: "Code walkthroughs", link: "/design#code-walkthroughs" },
+          { text: "Testing in practice", link: "/design#testing-in-practice" },
+          { text: "What is not here", link: "/design#what-is-not-here" },
+          { text: "Reproduce", link: "/design#reproduce" },
+        ],
+      },
+    ],
+  },
+  socialLinks: [
+    { icon: "github", link: "https://github.com/cuihairu/SimpleGoServer" },
+  ],
+  footer: {
+    message: "Released under the MIT License",
+    copyright: "Copyright © 2024-present cuihairu",
+  },
+  outline: { level: [2, 3], label: "On this page" },
+  search: { provider: "local" },
+  docFooter: { prev: "Previous", next: "Next" },
+  lastUpdated: { text: "Last updated" },
+};
+
+const zhTheme = {
+  ...enTheme,
+  siteTitle: "SimpleGoServer",
+  nav: [
+    { text: "设计取舍", link: "/zh/design" },
+    { text: "代码", link: "https://github.com/cuihairu/SimpleGoServer/tree/main/http-service" },
+  ],
+  sidebar: {
+    "/zh/": [
+      {
+        text: "http-service",
+        items: [
+          { text: "设计取舍", link: "/zh/design" },
+          { text: "服务边界", link: "/zh/design#服务边界" },
+          { text: "分层与依赖方向", link: "/zh/design#分层与依赖方向" },
+          {
+            text: "决策表",
+            collapsed: false,
+            items: [
+              { text: "生命周期", link: "/zh/design#生命周期" },
+              { text: "HTTP 层", link: "/zh/design#http-层" },
+              { text: "业务与存储", link: "/zh/design#业务与存储" },
+              { text: "可测试性", link: "/zh/design#可测试性" },
+            ],
+          },
+          { text: "代码走查", link: "/zh/design#代码走查" },
+          { text: "测试怎么落地", link: "/zh/design#测试怎么落地" },
+          { text: "没做的事", link: "/zh/design#没做的事" },
+          { text: "复现", link: "/zh/design#复现" },
+        ],
+      },
+    ],
+  },
+  footer: {
+    message: "基于 MIT 许可发布",
+    copyright: "Copyright © 2024-present cuihairu",
+  },
+  outline: { level: [2, 3], label: "页面导航" },
+  docFooter: { prev: "上一页", next: "下一页" },
+  lastUpdated: { text: "最后更新于" },
+};
+
 export default withMermaid(defineConfig({
-  lang: "zh-CN",
+  lang: "en-US",
   title: "SimpleGoServer",
   titleTemplate: false,
   description:
-    "标准库写的内存键值 HTTP 服务的设计取舍：生命周期、超时矩阵、并发选型、错误映射，以及明确没做的事与生产环境的补法。",
+    "Design trade-offs in a standard-library Go HTTP service: lifecycle, timeout matrix, concurrency choice, error mapping, and what is deliberately left out.",
   base,
   cleanUrls: true,
   lastUpdated: true,
   outDir: ".vitepress/dist",
-  themeConfig: {
-    siteTitle: "SimpleGoServer",
-    logo: "/logo.svg",
-    nav: [
-      { text: "设计取舍", link: "/design" },
-      { text: "代码", link: "https://github.com/cuihairu/SimpleGoServer/tree/main/http-service" },
-    ],
-    sidebar: {
-      "/": [
-        {
-          text: "http-service",
-          items: [
-            { text: "设计取舍", link: "/design" },
-            { text: "服务边界", link: "/design#服务边界" },
-            { text: "分层与依赖方向", link: "/design#分层与依赖方向" },
-            {
-              text: "决策表",
-              collapsed: false,
-              items: [
-                { text: "生命周期", link: "/design#生命周期" },
-                { text: "HTTP 层", link: "/design#http-层" },
-                { text: "业务与存储", link: "/design#业务与存储" },
-                { text: "可测试性", link: "/design#可测试性" },
-              ],
-            },
-            { text: "代码走查", link: "/design#代码走查" },
-            { text: "测试怎么落地", link: "/design#测试怎么落地" },
-            { text: "没做的事", link: "/design#没做的事" },
-            { text: "复现", link: "/design#复现" },
-          ],
-        },
-      ],
-    },
-    socialLinks: [
-      { icon: "github", link: "https://github.com/cuihairu/SimpleGoServer" },
-    ],
-    footer: {
-      message: "基于 MIT 许可发布",
-      copyright: "Copyright © 2024-present cuihairu",
-    },
-    outline: {
-      level: [2, 3],
-      label: "页面导航",
-    },
-    search: {
-      provider: "local",
-    },
-    docFooter: {
-      prev: "上一页",
-      next: "下一页",
-    },
-    lastUpdated: {
-      text: "最后更新于",
-    },
-  },
   head: [
     ["link", { rel: "icon", type: "image/svg+xml", href: `${base}favicon.svg` }],
     ["link", { rel: "preconnect", href: "https://fonts.googleapis.com" }],
@@ -91,15 +120,34 @@ export default withMermaid(defineConfig({
     ],
     ["meta", { name: "theme-color", content: "#00add8" }],
     ["meta", { property: "og:type", content: "website" }],
-    ["meta", { property: "og:locale", content: "zh-CN" }],
+    ["meta", { property: "og:locale", content: "en_US" }],
     ["meta", { property: "og:title", content: "SimpleGoServer" }],
     [
       "meta",
       {
         property: "og:description",
         content:
-          "一个 Go 服务的设计取舍——主线是「为什么这样设计」：每个关键选择都有备选方案与放弃理由。",
+          "Design trade-offs in a Go service: every key choice records the alternative and why it was rejected.",
       },
     ],
   ],
+  locales: {
+    root: {
+      label: "English",
+      lang: "en-US",
+      title: "SimpleGoServer",
+      description:
+        "Design trade-offs in a standard-library Go HTTP service: lifecycle, timeouts, concurrency, error mapping, and explicit non-goals.",
+      themeConfig: enTheme,
+    },
+    zh: {
+      label: "简体中文",
+      lang: "zh-CN",
+      link: "/zh/",
+      title: "SimpleGoServer",
+      description:
+        "标准库写的内存键值 HTTP 服务的设计取舍：生命周期、超时矩阵、并发选型、错误映射，以及明确没做的事与生产环境的补法。",
+      themeConfig: zhTheme,
+    },
+  },
 }))
