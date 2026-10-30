@@ -35,6 +35,12 @@ features:
     linkText: See tests
 ---
 
+## Architecture
+
+The layers follow the code, one file each, dependencies pointing one way:
+
+![SimpleGoServer layered architecture](/images/architecture-en.svg)
+
 ## What the service looks like
 
 A single-binary HTTP service with an in-memory key-value API and a health endpoint. A value is defined as "exactly one JSON value": fields and types are not inspected, and bytes are stored and returned as-is.

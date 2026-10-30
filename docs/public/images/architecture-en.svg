@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="1010" viewBox="0 0 1120 1010" role="img" aria-labelledby="title desc" xml:lang="en">
+<title id="title">SimpleGoServer · Layered Architecture</title>
+<desc id="desc">A single-binary standard-library HTTP service. main.go does wiring and lifecycle, handler.go is the transport layer, service.go is the business layer, store.go is the storage seam. Dependencies point one way: main → handler → Service → Store. Solid lines are business data flow, dashed lines are control and lifecycle.</desc>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10Z" fill="context-stroke"/></marker></defs>
+<style>text{font-family:Arial,'Noto Sans CJK SC','Microsoft YaHei',sans-serif;fill:#172b4d}.title{font-size:30px;font-weight:700}.name{font-size:23px;font-weight:700}.body{font-size:17px;fill:#435570}.small{font-size:15px;fill:#52647b}.label{font-size:15px;fill:#435570;paint-order:stroke;stroke:#f8fafc;stroke-width:5px;stroke-linejoin:round}.edge{fill:none;stroke-linejoin:round}.control{stroke-dasharray:7 5}</style>
+<rect width="1120" height="1010" rx="20" fill="#f8fafc"/>
+<text x="40" y="48" class="title" text-anchor="start">SimpleGoServer · Layered Architecture</text>
+<text x="40" y="80" class="body" text-anchor="start">Single binary · standard library only · one-way deps main → handler → Service → Store · swappable and testable layers</text>
+<path d="M560 205 V240" fill="none" stroke="#f8fafc" stroke-width="9"/>
+<path id="http-in" data-from="http-client" data-to="handler" d="M560 205 V240" class="edge" style="stroke:#475569;stroke-width:2" marker-end="url(#arrow)"/>
+<path d="M560 375 V415" fill="none" stroke="#f8fafc" stroke-width="9"/>
+<path id="service-call" data-from="handler" data-to="service" d="M560 375 V415" class="edge" style="stroke:#2563eb;stroke-width:2" marker-end="url(#arrow)"/>
+<path d="M560 550 V590" fill="none" stroke="#f8fafc" stroke-width="9"/>
+<path id="store-call" data-from="service" data-to="store" d="M560 550 V590" class="edge" style="stroke:#2563eb;stroke-width:2" marker-end="url(#arrow)"/>
+<path d="M560 725 V765" fill="none" stroke="#f8fafc" stroke-width="9"/>
+<path id="store-swap" data-from="store" data-to="future-store" d="M560 725 V765" class="edge control" style="stroke:#64748b;stroke-width:2" marker-end="url(#arrow)" marker-start="url(#arrow)"/>
+<path d="M300 340 H340" fill="none" stroke="#f8fafc" stroke-width="9"/>
+<path id="wiring" data-from="main" data-to="handler" d="M300 340 H340" class="edge control" style="stroke:#c2410c;stroke-width:2" marker-end="url(#arrow)"/>
+<path d="M170 520 V440" fill="none" stroke="#f8fafc" stroke-width="9"/>
+<path id="signal-shutdown" data-from="signal" data-to="main" d="M170 520 V440" class="edge control" style="stroke:#c2410c;stroke-width:2" marker-end="url(#arrow)"/>
+<g id="http-client" data-node="http-client"><rect x="340" y="115" width="440" height="90" rx="14" fill="#fff7ed" stroke="#fdba74" stroke-width="1.5"/>
+<text x="360" y="152" class="name" text-anchor="start">HTTP client / curl</text>
+<text x="360" y="185" class="body" text-anchor="start">PUT/GET/DELETE /kv/{key} · GET /healthz</text>
+</g>
+<g id="handler" data-node="handler"><rect x="340" y="240" width="440" height="135" rx="14" fill="#fff" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="360" y="278" class="name" text-anchor="start">handler.go · transport (HTTP)</text>
+<text x="360" y="311" class="body" text-anchor="start">Go 1.22 pattern routing · wrong method 405 + Allow</text>
+<text x="360" y="339" class="body" text-anchor="start">error → status mapping (one place: writeError)</text>
+<text x="360" y="367" class="body" text-anchor="start">JSON responses · internal details logged, never replied</text>
+</g>
+<g id="service" data-node="service"><rect x="340" y="415" width="440" height="135" rx="14" fill="#eef2ff" stroke="#a5b4fc" stroke-width="1.5"/>
+<text x="360" y="453" class="name" text-anchor="start">service.go · business</text>
+<text x="360" y="486" class="body" text-anchor="start">key validation (1-128 printable non-space ASCII)</text>
+<text x="360" y="514" class="body" text-anchor="start">value limit LimitReader(+1) · exactly one JSON value</text>
+<text x="360" y="542" class="body" text-anchor="start">sentinel errors ErrNotFound / ErrKeyInvalid / ErrValue*</text>
+</g>
+<g id="store" data-node="store"><rect x="340" y="590" width="440" height="135" rx="14" fill="#edf5ff" stroke="#93b9e3" stroke-width="1.5"/>
+<text x="360" y="628" class="name" text-anchor="start">store.go · storage seam</text>
+<text x="360" y="661" class="body" text-anchor="start">Store interface · single impl swappable · test seam</text>
+<text x="360" y="689" class="body" text-anchor="start">MemoryStore · RWMutex concurrency (lock stays local)</text>
+<text x="360" y="717" class="body" text-anchor="start">ownership: Value is immutable once handed off</text>
+</g>
+<g id="future-store" data-node="future-store"><rect x="340" y="765" width="440" height="95" rx="14" fill="#fff" stroke="#cbd5e1" stroke-width="1.5" stroke-dasharray="6 5"/>
+<text x="360" y="802" class="name" text-anchor="start">future swap-in · Redis / PostgreSQL</text>
+<text x="360" y="833" class="body" text-anchor="start">remote store serializes itself · other layers unchanged</text>
+</g>
+<g id="main" data-node="main"><rect x="40" y="240" width="260" height="200" rx="14" fill="#eef8f5" stroke="#86c9b3" stroke-width="1.5"/>
+<text x="60" y="278" class="name" text-anchor="start">main.go · wiring + lifecycle</text>
+<text x="60" y="311" class="body" text-anchor="start">flag parsing -addr / -max-bytes /</text>
+<text x="60" y="334" class="body" text-anchor="start">-shutdown-timeout</text>
+<text x="60" y="361" class="body" text-anchor="start">Service(MemoryStore) assembly</text>
+<text x="60" y="388" class="body" text-anchor="start">http.Server four-timeout matrix</text>
+<text x="60" y="415" class="body" text-anchor="start">run(args) int testable entry · exit-code semantics</text>
+</g>
+<g id="signal" data-node="signal"><rect x="40" y="520" width="260" height="85" rx="14" fill="#eef8f5" stroke="#86c9b3" stroke-width="1.5" stroke-dasharray="6 5"/>
+<text x="60" y="558" class="name" text-anchor="start">SIGINT / SIGTERM</text>
+<text x="60" y="589" class="body" text-anchor="start">signal.NotifyContext → ctx cancellation</text>
+</g>
+<g id="key-decisions" data-node="key-decisions"><rect x="840" y="240" width="240" height="200" rx="12" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="858" y="278" class="name" text-anchor="start">Key trade-offs</text>
+<text x="858" y="311" class="body" text-anchor="start">timeouts increase: ReadHeader/</text>
+<text x="858" y="334" class="body" text-anchor="start">Read/Write/Idle</text>
+<text x="858" y="361" class="body" text-anchor="start">concurrency: RWMutex read/write</text>
+<text x="858" y="388" class="body" text-anchor="start">interface is a seam, not a ritual</text>
+<text x="858" y="415" class="body" text-anchor="start">error tiers: caller vs log</text>
+</g>
+<text x="595" y="230" class="label" text-anchor="start">HTTP</text>
+<text x="595" y="400" class="label" text-anchor="start" style="fill:#2563eb">Service calls · ctx flows through</text>
+<text x="595" y="575" class="label" text-anchor="start" style="fill:#2563eb">Store interface Get/Put/Delete</text>
+<text x="595" y="750" class="label" text-anchor="start">swap with zero changes</text>
+<text x="300" y="325" class="label" text-anchor="end" style="fill:#c2410c">wires →</text>
+<text x="180" y="478" class="label" text-anchor="middle" style="fill:#c2410c">Shutdown drains · timeout fallback · exit code 0/1</text>
+<text x="40" y="930" class="label" text-anchor="start">solid: business data flow · dashed: control / lifecycle</text>
+<text x="40" y="958" class="small" text-anchor="start">Layers follow the code: one directory, four source files · one file per layer · one-way deps · structure as documentation</text>
+</svg>

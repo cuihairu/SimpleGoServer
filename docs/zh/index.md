@@ -35,6 +35,12 @@ features:
     linkText: 看测试
 ---
 
+## 架构
+
+分层跟着代码走，每层一个文件，依赖单向：
+
+![SimpleGoServer 分层架构](/images/architecture-zh.svg)
+
 ## 服务长什么样
 
 单二进制 HTTP 服务，内存键值 API 加一个健康检查端点。值定义为「恰好一个 JSON 值」：不校验字段，不校验类型，字节原样存原样取。

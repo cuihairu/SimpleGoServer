@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="1010" viewBox="0 0 1120 1010" role="img" aria-labelledby="title desc" xml:lang="zh-CN">
+<title id="title">SimpleGoServer · 分层架构</title>
+<desc id="desc">单二进制标准库 HTTP 服务。main.go 装配与生命周期，handler.go 传输层，service.go 业务层，store.go 存储缝。依赖单向 main → handler → Service → Store。实线为业务数据流，虚线为控制与生命周期。</desc>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10Z" fill="context-stroke"/></marker></defs>
+<style>text{font-family:Arial,'Noto Sans CJK SC','Microsoft YaHei',sans-serif;fill:#172b4d}.title{font-size:30px;font-weight:700}.name{font-size:23px;font-weight:700}.body{font-size:17px;fill:#435570}.small{font-size:15px;fill:#52647b}.label{font-size:15px;fill:#435570;paint-order:stroke;stroke:#f8fafc;stroke-width:5px;stroke-linejoin:round}.edge{fill:none;stroke-linejoin:round}.control{stroke-dasharray:7 5}</style>
+<rect width="1120" height="1010" rx="20" fill="#f8fafc"/>
+<text x="40" y="48" class="title" text-anchor="start">SimpleGoServer · 分层架构</text>
+<text x="40" y="80" class="body" text-anchor="start">单二进制 · 标准库 only · 依赖单向 main → handler → Service → Store · 三层可替换与可测试</text>
+<path d="M560 205 V240" fill="none" stroke="#f8fafc" stroke-width="9"/>
+<path id="http-in" data-from="http-client" data-to="handler" d="M560 205 V240" class="edge" style="stroke:#475569;stroke-width:2" marker-end="url(#arrow)"/>
+<path d="M560 375 V415" fill="none" stroke="#f8fafc" stroke-width="9"/>
+<path id="service-call" data-from="handler" data-to="service" d="M560 375 V415" class="edge" style="stroke:#2563eb;stroke-width:2" marker-end="url(#arrow)"/>
+<path d="M560 550 V590" fill="none" stroke="#f8fafc" stroke-width="9"/>
+<path id="store-call" data-from="service" data-to="store" d="M560 550 V590" class="edge" style="stroke:#2563eb;stroke-width:2" marker-end="url(#arrow)"/>
+<path d="M560 725 V765" fill="none" stroke="#f8fafc" stroke-width="9"/>
+<path id="store-swap" data-from="store" data-to="future-store" d="M560 725 V765" class="edge control" style="stroke:#64748b;stroke-width:2" marker-end="url(#arrow)" marker-start="url(#arrow)"/>
+<path d="M300 340 H340" fill="none" stroke="#f8fafc" stroke-width="9"/>
+<path id="wiring" data-from="main" data-to="handler" d="M300 340 H340" class="edge control" style="stroke:#c2410c;stroke-width:2" marker-end="url(#arrow)"/>
+<path d="M170 520 V440" fill="none" stroke="#f8fafc" stroke-width="9"/>
+<path id="signal-shutdown" data-from="signal" data-to="main" d="M170 520 V440" class="edge control" style="stroke:#c2410c;stroke-width:2" marker-end="url(#arrow)"/>
+<g id="http-client" data-node="http-client"><rect x="340" y="115" width="440" height="90" rx="14" fill="#fff7ed" stroke="#fdba74" stroke-width="1.5"/>
+<text x="360" y="152" class="name" text-anchor="start">HTTP 客户端 / curl</text>
+<text x="360" y="185" class="body" text-anchor="start">PUT/GET/DELETE /kv/{key} · GET /healthz</text>
+</g>
+<g id="handler" data-node="handler"><rect x="340" y="240" width="440" height="135" rx="14" fill="#fff" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="360" y="278" class="name" text-anchor="start">handler.go · 传输层 (HTTP)</text>
+<text x="360" y="311" class="body" text-anchor="start">Go 1.22 模式路由 · 方法不匹配 405 + Allow</text>
+<text x="360" y="339" class="body" text-anchor="start">错误 → 状态码映射（唯一一处 writeError）</text>
+<text x="360" y="367" class="body" text-anchor="start">JSON 响应 · 内部错误细节进日志不进响应</text>
+</g>
+<g id="service" data-node="service"><rect x="340" y="415" width="440" height="135" rx="14" fill="#eef2ff" stroke="#a5b4fc" stroke-width="1.5"/>
+<text x="360" y="453" class="name" text-anchor="start">service.go · 业务层</text>
+<text x="360" y="486" class="body" text-anchor="start">key 校验（1-128 可打印非空格 ASCII）</text>
+<text x="360" y="514" class="body" text-anchor="start">值上限 LimitReader(+1) · 恰好一个 JSON 值</text>
+<text x="360" y="542" class="body" text-anchor="start">哨兵错误 ErrNotFound / ErrKeyInvalid / ErrValue*</text>
+</g>
+<g id="store" data-node="store"><rect x="340" y="590" width="440" height="135" rx="14" fill="#edf5ff" stroke="#93b9e3" stroke-width="1.5"/>
+<text x="360" y="628" class="name" text-anchor="start">store.go · 存储层（缝）</text>
+<text x="360" y="661" class="body" text-anchor="start">Store 接口 · 单实现可替换 · 测试接缝</text>
+<text x="360" y="689" class="body" text-anchor="start">MemoryStore · RWMutex 并发安全（锁不泄漏）</text>
+<text x="360" y="717" class="body" text-anchor="start">所有权：Value 交出后不可变</text>
+</g>
+<g id="future-store" data-node="future-store"><rect x="340" y="765" width="440" height="95" rx="14" fill="#fff" stroke="#cbd5e1" stroke-width="1.5" stroke-dasharray="6 5"/>
+<text x="360" y="802" class="name" text-anchor="start">未来替换实现 · Redis / PostgreSQL</text>
+<text x="360" y="833" class="body" text-anchor="start">远程存储自带串行化 · 换实现其他层零改动</text>
+</g>
+<g id="main" data-node="main"><rect x="40" y="240" width="260" height="200" rx="14" fill="#eef8f5" stroke="#86c9b3" stroke-width="1.5"/>
+<text x="60" y="278" class="name" text-anchor="start">main.go · 装配 + 生命周期</text>
+<text x="60" y="311" class="body" text-anchor="start">flag 解析 -addr / -max-bytes /</text>
+<text x="60" y="334" class="body" text-anchor="start">-shutdown-timeout</text>
+<text x="60" y="361" class="body" text-anchor="start">Service(MemoryStore) 装配</text>
+<text x="60" y="388" class="body" text-anchor="start">http.Server 四超时矩阵</text>
+<text x="60" y="415" class="body" text-anchor="start">run(args) int 可测入口 · 退出码语义</text>
+</g>
+<g id="signal" data-node="signal"><rect x="40" y="520" width="260" height="85" rx="14" fill="#eef8f5" stroke="#86c9b3" stroke-width="1.5" stroke-dasharray="6 5"/>
+<text x="60" y="558" class="name" text-anchor="start">SIGINT / SIGTERM</text>
+<text x="60" y="589" class="body" text-anchor="start">signal.NotifyContext → ctx 取消</text>
+</g>
+<g id="key-decisions" data-node="key-decisions"><rect x="840" y="240" width="240" height="200" rx="12" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text x="858" y="278" class="name" text-anchor="start">关键取舍</text>
+<text x="858" y="311" class="body" text-anchor="start">超时四域递增：ReadHeader/</text>
+<text x="858" y="334" class="body" text-anchor="start">Read/Write/Idle</text>
+<text x="858" y="361" class="body" text-anchor="start">并发：RWMutex 读写均衡</text>
+<text x="858" y="388" class="body" text-anchor="start">接口是缝不是仪式</text>
+<text x="858" y="415" class="body" text-anchor="start">错误分级：客户端 vs 日志</text>
+</g>
+<text x="595" y="230" class="label" text-anchor="start">HTTP</text>
+<text x="595" y="400" class="label" text-anchor="start" style="fill:#2563eb">Service 方法调用 · ctx 全链路透传</text>
+<text x="595" y="575" class="label" text-anchor="start" style="fill:#2563eb">Store 接口 Get/Put/Delete</text>
+<text x="595" y="750" class="label" text-anchor="start">换实现零改动</text>
+<text x="300" y="325" class="label" text-anchor="end" style="fill:#c2410c">装配 →</text>
+<text x="180" y="478" class="label" text-anchor="middle" style="fill:#c2410c">Shutdown 排空在途 · 超时兜底 · 退出码 0/1</text>
+<text x="40" y="930" class="label" text-anchor="start">实线：业务数据流 · 虚线：控制 / 生命周期</text>
+<text x="40" y="958" class="small" text-anchor="start">分层依据代码事实：单目录四源文件 · 每层一文件 · 依赖单向 · 结构即文档</text>
+</svg>
