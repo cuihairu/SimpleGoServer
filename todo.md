@@ -21,3 +21,10 @@
 - [x] 中英 README 徽章与链接修复（img 徽章、单斜杠、zh 链接指 /zh/）— 本轮 commit，check:links 全绿
 - [x] 帧协议归属口径对齐源码（实现仍在仓内，站点仅讲 KV 题）— 本轮 commit
 - [x] 文档与源码一致性审计（6 处差异全修复）— 本轮 commit，docs/审计-文档一致性.md
+
+## 代码深审 2026-11-01（P2/P3 记录，见 docs/review/2026-11-01-code-review.md）
+- [ ] P2：cmd/cli/client.go:57 onEvent 阻塞发送可能卡死读循环（突发推送+慢消费者 → PONG 不处理 → keepalive 误断）；建议改非阻塞 select 丢帧，参照 examples/concurrent-client/main.go:118-121
+- [ ] P3：internal/balancer/weighted_random.go:35 全零权重时 rand.Intn(preSum[size]==0) panic；建议 Next 对 preSum[size]<=0 返回错误或回退 backends[0]
+- [ ] P3：internal/executor/async_executor.go:90 过期注释「Stop closes both channels」（实际仅 cancel ctx，不关闭通道）；建议改述或删除
+- [ ] P3：cmd/server/main.go:20 demoProtocol sessionJanitor 永不 Close（进程生命周期无碍，测试 goleak 可滞留）；建议退出路径 defer demoProtocol.Close()
+- [ ] P3：examples/echo-server/main.go broadcastLoop goroutine 未 join（stop 关闭后有界退出，非泄漏；测试可短暂滞留）；建议 WaitGroup join 或注明有意不 join
