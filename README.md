@@ -2,15 +2,13 @@
 
 # SimpleGoServer
 
-<p align="center">
-<a href="https://github.com/cuihairu/SimpleGoServer/releases"><img alt="Status" src="https://img.shields.io/badge/status-in%20development-orange"></a>
-</p>
+<p align="center"><a href="https://github.com/cuihairu/SimpleGoServer/releases"><img alt="Status" src="https://img.shields.io/badge/status-in%20development-orange"></a> <a href="https://cuihairu.github.io/SimpleGoServer/"><img src="https://img.shields.io/badge/docs-docs-blue" alt="docs"></a></p>
 
 A reference implementation for a backend interview question: **build a simple Go service**. It exposes an in-memory key-value API (`PUT/GET/DELETE /kv/{key}`, the value being a single JSON value) plus a `GET /healthz` health-check endpoint, ships as a single binary, and uses only the standard library. The feature set is deliberately minimal: the question does not measure how much the service does, but the engineering shape of a service that **lives gracefully and dies cleanly**.
 
 Another question from the same interview set (a high-performance non-blocking network communication model plus a custom TCP framing protocol) has since become an independent project, [JsonStream](https://github.com/cuihairu/jsonstream); the problem statement, reference implementation, and protocol documentation all live there.
 
-**Online documentation site**: <https://cuihairu.github.io/SimpleGoServer/> — design trade-offs, code walkthroughs, the things deliberately left out, and commands to reproduce the results.
+**Online documentation site**: <https://cuihairu.github.io/SimpleGoServer//> — design trade-offs, code walkthroughs, the things deliberately left out, and commands to reproduce the results.
 
 ---
 
