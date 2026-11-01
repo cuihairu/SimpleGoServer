@@ -2,14 +2,14 @@
 
 # SimpleGoServer
 
-<p align="center">[![Status](https://img.shields.io/badge/status-in%20development-orange)](https://github.com/cuihairu/SimpleGoServer/releases) <a href="https://cuihairu.github.io/SimpleGoServer/zh//"><img src="https://img.shields.io/badge/%E6%96%87%E6%A1%A3-blue" alt="docs"></a>
+<p align="center"><a href="https://github.com/cuihairu/SimpleGoServer/releases"><img src="https://img.shields.io/badge/status-in%20development-orange" alt="status"></a> <a href="https://cuihairu.github.io/SimpleGoServer/zh/"><img src="https://img.shields.io/badge/%E6%96%87%E6%A1%A3-blue" alt="docs"></a>
 </p>
 
 一道后端面试题的参考实现：**写一个简单 Go 服务**。内存键值 API（`PUT/GET/DELETE /kv/{key}`，值为单个 JSON 值）加一个 `GET /healthz` 健康检查端点，单二进制，只用标准库。功能刻意简单——这道题考的不是功能量，而是服务"**活得体面、死得干净**"的工程形态。
 
-同一批面试题的另一道（高性能非阻塞网络通信模型 + 自定义 TCP 帧协议）已独立成 [JsonStream](https://github.com/cuihairu/jsonstream)，题面、参考实现与协议文档都在那边。
+同一批面试题的另一道（高性能非阻塞网络通信模型 + 自定义 TCP 帧协议）另立 [JsonStream](https://github.com/cuihairu/jsonstream)，设计决策记录在那。本仓的实现（[`cmd/`](https://github.com/cuihairu/SimpleGoServer/tree/main/cmd)、[`internal/`](https://github.com/cuihairu/SimpleGoServer/tree/main/internal)、[`pkg/`](https://github.com/cuihairu/SimpleGoServer/tree/main/pkg)、[`examples/`](https://github.com/cuihairu/SimpleGoServer/tree/main/examples)）仍可运行，见 [`examples/README.md`](https://github.com/cuihairu/SimpleGoServer/blob/main/examples/README.md) 与 [`config.example.yml`](https://github.com/cuihairu/SimpleGoServer/blob/main/config.example.yml)。本页只讲 KV 这道题。
 
-**在线文档站**：<https://cuihairu.github.io/SimpleGoServer/zh//> —— 设计取舍、代码走查、没做的事与复现命令。
+**在线文档站**：<https://cuihairu.github.io/SimpleGoServer/zh/> —— 设计取舍、代码走查、没做的事与复现命令。
 
 ---
 
@@ -89,7 +89,7 @@ Go 的 map 不是并发安全的，并发读写不保护轻则 race、重则 `fa
 
 ## 三、实现与测试结果
 
-实现位置——单目录 4 个源文件加 4 个测试文件，每层一文件，零第三方依赖：
+实现位置——单目录 4 个源文件加 4 个测试文件，每层一文件。生产代码只用标准库（goleak 仅测试依赖；cmd/ 下的帧协议服务用 cobra 与 viper）：
 
 ```text
 http-service/
@@ -123,4 +123,4 @@ curl -si localhost:8080/kv/answer                            # 404
 # 终端 1 按 Ctrl+C（或 kill -TERM）：日志打出 "shutdown complete"，退出码 0
 ```
 
-深入阅读：[在线文档站](https://cuihairu.github.io/SimpleGoServer/)——四组决策表、代码走查与"没做的事"清单；题面的完整拆解也在站内 [设计取舍](https://cuihairu.github.io/SimpleGoServer/design) 一页。
+深入阅读：[在线文档站](https://cuihairu.github.io/SimpleGoServer/zh/)——四组决策表、代码走查与"没做的事"清单；题面的完整拆解也在站内 [设计取舍](https://cuihairu.github.io/SimpleGoServer/zh/design) 一页。

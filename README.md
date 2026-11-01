@@ -2,14 +2,14 @@
 
 # SimpleGoServer
 
-<p align="center">[![Status](https://img.shields.io/badge/status-in%20development-orange)](https://github.com/cuihairu/SimpleGoServer/releases) <a href="https://cuihairu.github.io/SimpleGoServer//"><img src="https://img.shields.io/badge/docs-blue" alt="docs"></a>
+<p align="center"><a href="https://github.com/cuihairu/SimpleGoServer/releases"><img src="https://img.shields.io/badge/status-in%20development-orange" alt="status"></a> <a href="https://cuihairu.github.io/SimpleGoServer/"><img src="https://img.shields.io/badge/docs-blue" alt="docs"></a>
 </p>
 
 A reference implementation for a backend interview question: **build a simple Go service**. It exposes an in-memory key-value API (`PUT/GET/DELETE /kv/{key}`, the value being a single JSON value) plus a `GET /healthz` health-check endpoint, ships as a single binary, and uses only the standard library. The feature set is deliberately minimal: the question does not measure how much the service does, but the engineering shape of a service that **lives gracefully and dies cleanly**.
 
-Another question from the same interview set (a high-performance non-blocking network communication model plus a custom TCP framing protocol) has since become an independent project, [JsonStream](https://github.com/cuihairu/jsonstream); the problem statement, reference implementation, and protocol documentation all live there.
+Another question from the same interview set (a high-performance non-blocking network communication model plus a custom TCP framing protocol) is also its own repository, [JsonStream](https://github.com/cuihairu/jsonstream), which records those design decisions. The implementation in this repository — under [`cmd/`](https://github.com/cuihairu/SimpleGoServer/tree/main/cmd), [`internal/`](https://github.com/cuihairu/SimpleGoServer/tree/main/internal), [`pkg/`](https://github.com/cuihairu/SimpleGoServer/tree/main/pkg) and [`examples/`](https://github.com/cuihairu/SimpleGoServer/tree/main/examples) — still runs; see [`examples/README.md`](https://github.com/cuihairu/SimpleGoServer/blob/main/examples/README.md) and [`config.example.yml`](https://github.com/cuihairu/SimpleGoServer/blob/main/config.example.yml). This page covers only the KV exercise.
 
-**Online documentation site**: <https://cuihairu.github.io/SimpleGoServer//> — design trade-offs, code walkthroughs, the things deliberately left out, and commands to reproduce the results.
+**Online documentation site**: <https://cuihairu.github.io/SimpleGoServer/> — design trade-offs, code walkthroughs, the things deliberately left out, and commands to reproduce the results.
 
 ---
 
@@ -89,7 +89,7 @@ No routing framework; Go 1.22's pattern syntax is used instead: `mux.HandleFunc(
 
 ## 3. Implementation and Test Results
 
-Where the implementation lives — 4 source files plus 4 test files in a single directory, one file per layer, zero third-party dependencies:
+Where the implementation lives — 4 source files plus 4 test files in a single directory, one file per layer. The production code uses only the standard library (goleak is a test-only dependency; the separate framing server under `cmd/` uses cobra and viper):
 
 ```text
 http-service/

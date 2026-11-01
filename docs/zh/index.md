@@ -72,4 +72,4 @@ curl -i 127.0.0.1:8080/kv/k                          # 200
 kill -TERM <pid>                                      # 在途请求走完，退出码 0
 ```
 
-题面原文、验收点与逐条验证命令见 [README](https://github.com/cuihairu/SimpleGoServer#readme)，实现代码在 [`http-service/`](https://github.com/cuihairu/SimpleGoServer/tree/main/http-service)。同一批面试题的 Reactor 与自定义帧协议那题已独立成 [JsonStream](https://github.com/cuihairu/jsonstream)。
+题面原文、验收点与逐条验证命令见 [README](https://github.com/cuihairu/SimpleGoServer#readme)，实现代码在 [`http-service/`](https://github.com/cuihairu/SimpleGoServer/tree/main/http-service)。同一批面试题的 Reactor 与自定义帧协议那题另立 [JsonStream](https://github.com/cuihairu/jsonstream)；本仓在 [`cmd/`](https://github.com/cuihairu/SimpleGoServer/tree/main/cmd)、[`internal/`](https://github.com/cuihairu/SimpleGoServer/tree/main/internal)、[`pkg/`](https://github.com/cuihairu/SimpleGoServer/tree/main/pkg)、[`examples/`](https://github.com/cuihairu/SimpleGoServer/tree/main/examples) 下也保留一份可运行实现。
