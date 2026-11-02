@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/cuihairu/simplegoserver/pkg/handler"
@@ -17,6 +18,7 @@ import (
 // One shared protocol handler for every connection: the subscription table
 // must be process-wide, or clients subscribed to the same topic on
 // different connections would never see each other's publishes.
+var demoProtocolClose sync.Once
 var demoProtocol = proto.NewProtocolHandler(func(action string, data []byte) (any, error) {
 	return map[string]any{"action": action, "data": json.RawMessage(data)}, nil
 })
@@ -44,6 +46,7 @@ var (
 )
 
 func runServer() {
+	defer demoProtocolClose.Do(demoProtocol.Close)
 	demoProtocol.RequireHello(viper.GetBool("server.strictHello"))
 	addr := fmt.Sprintf("%s://%s:%d", viper.GetString("server.network"), viper.GetString("server.host"), viper.GetInt("server.port"))
 	options := &reactor.ServerOptions{
