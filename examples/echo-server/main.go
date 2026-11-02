@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -103,8 +104,13 @@ func runServer(addr string, broadcastEvery, idle time.Duration, sigCh <-chan os.
 	}()
 
 	stopBroadcast := make(chan struct{})
+	var broadcastDone sync.WaitGroup
 	if broadcastEvery > 0 {
-		go broadcastLoop(protocol, broadcastEvery, stopBroadcast)
+		broadcastDone.Add(1)
+		go func() {
+			defer broadcastDone.Done()
+			broadcastLoop(protocol, broadcastEvery, stopBroadcast)
+		}()
 	}
 
 	fmt.Printf("echo-server listening on %s (ctrl-c to shut down)\n", addr)
@@ -113,6 +119,7 @@ func runServer(addr string, broadcastEvery, idle time.Duration, sigCh <-chan os.
 
 	fmt.Println("shutting down…")
 	close(stopBroadcast)
+	broadcastDone.Wait()
 	server.ShutdownGracefully()
 	fmt.Println("bye")
 	return nil
