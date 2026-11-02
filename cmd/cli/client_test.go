@@ -305,6 +305,42 @@ func TestCoerceJSONPayload(t *testing.T) {
 	}
 }
 
+// TestEventSinkDropsWhenFull pins the regression for the P2 review note:
+// the event handler must never block the protocol read loop, even when a
+// slow consumer has filled the buffer — dropping a frame is preferable to
+// stalling the connection (which would miss PONGs and trip the keepalive).
+func TestEventSinkDropsWhenFull(t *testing.T) {
+	ch := make(chan *proto.Frame, 1)
+	sink := eventSink(ch)
+
+	// fill the buffer so the next send cannot succeed
+	sink(&proto.Frame{Header: proto.FrameHeader{FrameType: proto.PUBLISH}})
+
+	done := make(chan struct{})
+	go func() {
+		sink(&proto.Frame{Header: proto.FrameHeader{FrameType: proto.PING}})
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// the second send returned without blocking
+	case <-time.After(time.Second):
+		t.Fatal("eventSink blocked on a full buffer; a slow consumer would stall the read loop")
+	}
+
+	// the buffered frame must still be the first one; the second was dropped
+	got := <-ch
+	if got.Header.FrameType != proto.PUBLISH {
+		t.Fatalf("sink delivered frame type %v, want PUBLISH", got.Header.FrameType)
+	}
+	select {
+	case got := <-ch:
+		t.Fatalf("sink delivered an extra frame (%v) after the buffer was full", got.Header.FrameType)
+	default:
+	}
+}
+
 // TestRunCallSendsBareTextAsJSONString drives a full round trip with the
 // most natural -data input, the one that used to die on a marshal error.
 func TestRunCallSendsBareTextAsJSONString(t *testing.T) {

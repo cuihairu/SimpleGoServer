@@ -54,7 +54,7 @@ func run(args []string) int {
 	}
 
 	eventCh := make(chan *proto.Frame, 16)
-	onEvent := func(frame *proto.Frame) { eventCh <- frame }
+	onEvent := eventSink(eventCh)
 
 	// A subscriber is about to park in the watch loop, so trap the
 	// interrupt signals for the whole run, not just the loop: a Ctrl+C
@@ -161,6 +161,20 @@ func run(args []string) int {
 		}
 	}
 	return 0
+}
+
+// eventSink returns the protocol event handler used by run: it forwards
+// frames to ch, but never blocks. A slow consumer that fills the buffer
+// makes it drop frames instead, so a burst of pushes cannot stall the
+// protocol read loop — which would otherwise miss PONG frames and trip
+// the keepalive.
+func eventSink(ch chan<- *proto.Frame) func(*proto.Frame) {
+	return func(frame *proto.Frame) {
+		select {
+		case ch <- frame:
+		default:
+		}
+	}
 }
 
 // coerceJSONPayload passes well-formed JSON through untouched and wraps any
