@@ -33,10 +33,12 @@ func (w *WeightedRandomBalancer[T]) Next(key string) (T, error) {
 		return w.backends[0], nil
 	}
 	if w.preSum[size] <= 0 {
-		// Every backend carries a non-positive weight (e.g. all zero), so no
-		// weighted distribution exists and rand.Intn(0) would panic. Fall back
-		// to the first backend, matching the single-backend path.
-		return w.backends[0], nil
+		// Register rejects non-positive weights, so a non-positive total is
+		// only reachable if a registered backend's weight was mutated to zero
+		// or negative afterwards. No weighted distribution exists then: refuse
+		// rather than call rand.Intn(0) (which would panic) or silently serve
+		// an arbitrary backend.
+		return b, fmt.Errorf("weighted random: total weight %d is not positive", w.preSum[size])
 	}
 	r := rand.Intn(w.preSum[size]) // #nosec G404 -- distribution fairness only, no security role
 	// Search always lands in [1, size]: preSum[size] > r rules out a miss
@@ -57,6 +59,13 @@ func (w *WeightedRandomBalancer[T]) buildPreSum() {
 }
 
 func (w *WeightedRandomBalancer[T]) Register(WeightedBackend T) error {
+	// A non-positive weight would make preSum non-monotonic, breaking the
+	// sort.Search prefix-false/suffix-true premise and skewing the
+	// distribution; a zero-weight backend should never be selected at all.
+	// Reject it up front, the same rule WeightedRoundRobin enforces.
+	if WeightedBackend.Weight() <= 0 {
+		return fmt.Errorf("backend %q has invalid weight %d: must be positive", WeightedBackend.Id(), WeightedBackend.Weight())
+	}
 	w.rwMutex.Lock()
 	defer w.rwMutex.Unlock()
 	for _, back := range w.backends {
