@@ -87,11 +87,11 @@ func (e *AsyncExecutor[T]) worker() {
 	for {
 		select {
 		case t := <-e.tasks:
-			// Stop closes both channels; a closed channel makes this
-			// receive immediately ready with the zero value, and with
-			// ctx.Done also ready the select may pick either side — a
-			// nil action here would be a call of a nil func, i.e. a
-			// process-killing panic in a worker goroutine.
+			// Stop only cancels ctx; the task channels stay open so a
+			// concurrent sender can never hit a closed-channel panic. The nil
+			// guard is defensive: a future channel-close redesign would make
+			// this receive immediately ready with a zero value and race
+			// ctx.Done, so calling it here could panic in a worker goroutine.
 			if t == nil {
 				continue
 			}
