@@ -32,6 +32,12 @@ func (w *WeightedRandomBalancer[T]) Next(key string) (T, error) {
 	if size == 1 {
 		return w.backends[0], nil
 	}
+	if w.preSum[size] <= 0 {
+		// Every backend carries a non-positive weight (e.g. all zero), so no
+		// weighted distribution exists and rand.Intn(0) would panic. Fall back
+		// to the first backend, matching the single-backend path.
+		return w.backends[0], nil
+	}
 	r := rand.Intn(w.preSum[size]) // #nosec G404 -- distribution fairness only, no security role
 	// Search always lands in [1, size]: preSum[size] > r rules out a miss
 	// (so index <= size) and preSum[0] == 0 > r would need r < 0 (so

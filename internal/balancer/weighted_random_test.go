@@ -64,3 +64,27 @@ func TestWeightedRandomBalancer_UnregisterRemovesMatch(t *testing.T) {
 		}
 	}
 }
+
+// TestWeightedRandomBalancer_AllZeroWeights pins the degenerate case where
+// every registered backend has weight zero: preSum[size] is 0, and
+// rand.Intn(0) would panic. Next must fall back to the first backend instead
+// of blowing up.
+func TestWeightedRandomBalancer_AllZeroWeights(t *testing.T) {
+	a := NewFakeBackend("a", 0)
+	b := NewFakeBackend("b", 0)
+	balancer := NewWeightedRandomBalancer[*FakeBackend]()
+	for _, backend := range []*FakeBackend{a, b} {
+		if err := balancer.Register(backend); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < 100; i++ {
+		next, err := balancer.Next("k")
+		if err != nil {
+			t.Fatalf("Next(): %v", err)
+		}
+		if next.Id() != "a" {
+			t.Fatalf("Next() = %s, want fallback to the first backend %q", next.Id(), "a")
+		}
+	}
+}
