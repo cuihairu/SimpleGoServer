@@ -29,8 +29,16 @@ type Response struct {
 func (r *Response) OK() bool { return r.Err == nil }
 
 // EventHandler receives frames the client did not issue a request for,
-// i.e. PUBLISH pushes from the server.
+// i.e. PUBLISH pushes from the server. Handlers run on the read loop and
+// must not block.
 type EventHandler func(frame *Frame)
+
+// AcknowledgingEventHandler receives a server push and reports whether it
+// was accepted (true) or rejected by a bounded consumer (false). Rejection
+// tells ResilientClient not to advance that topic's reconnect cursor, so
+// the server can replay the publish after a reconnect. Handlers run on the
+// read loop and must not block.
+type AcknowledgingEventHandler func(frame *Frame) bool
 
 // Client is the client-side counterpart of ProtocolHandler. A single
 // Client multiplexes concurrent requests over one connection, matching

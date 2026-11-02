@@ -341,6 +341,26 @@ func TestEventSinkDropsWhenFull(t *testing.T) {
 	}
 }
 
+// TestAcknowledgingEventSinkReportsFullBuffer pins the resilient cursor
+// contract: success reports acceptance, a full buffer reports rejection so
+// ResilientClient keeps the dropped publish replayable.
+func TestAcknowledgingEventSinkReportsFullBuffer(t *testing.T) {
+	ch := make(chan *proto.Frame, 1)
+	sink := acknowledgingEventSink(ch)
+	first := &proto.Frame{Header: proto.FrameHeader{FrameType: proto.PUBLISH}}
+	second := &proto.Frame{Header: proto.FrameHeader{FrameType: proto.PUBLISH}}
+
+	if !sink(first) {
+		t.Fatal("acknowledgingEventSink rejected an empty buffer")
+	}
+	if sink(second) {
+		t.Fatal("acknowledgingEventSink accepted a frame onto a full buffer")
+	}
+	if got := <-ch; got != first {
+		t.Fatalf("buffered frame = %v, want the first frame", got)
+	}
+}
+
 // TestRunCallSendsBareTextAsJSONString drives a full round trip with the
 // most natural -data input, the one that used to die on a marshal error.
 func TestRunCallSendsBareTextAsJSONString(t *testing.T) {

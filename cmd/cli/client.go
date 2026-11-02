@@ -76,7 +76,7 @@ func run(args []string) int {
 
 	var client protocolClient
 	if *resilient {
-		rc := proto.NewResilientClient(*addr, onEvent, nil)
+		rc := proto.NewAcknowledgedResilientClient(*addr, acknowledgingEventSink(eventCh), nil)
 		client = rc
 		// Connect handshakes and will keep the session alive across
 		// server restarts; -hello and -keepalive are subsumed by it
@@ -173,6 +173,21 @@ func eventSink(ch chan<- *proto.Frame) func(*proto.Frame) {
 		select {
 		case ch <- frame:
 		default:
+		}
+	}
+}
+
+// acknowledgingEventSink is the resilient variant of eventSink: a failed
+// enqueue is also reported to the caller so ResilientClient leaves the
+// replay cursor before the dropped publish and asks for it again after a
+// reconnect.
+func acknowledgingEventSink(ch chan<- *proto.Frame) func(*proto.Frame) bool {
+	return func(frame *proto.Frame) bool {
+		select {
+		case ch <- frame:
+			return true
+		default:
+			return false
 		}
 	}
 }

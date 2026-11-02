@@ -84,6 +84,12 @@ func (rc *ResilientClient) recordCursor(frame *Frame) {
 	rc.mu.Unlock()
 }
 
+func (rc *ResilientClient) setPublishCursor(topic string, seq uint64) {
+	rc.mu.Lock()
+	rc.cursors[topic] = seq
+	rc.mu.Unlock()
+}
+
 // snapshotCursors copies the cursor table for the resume handshake.
 func (rc *ResilientClient) snapshotCursors() map[string]uint64 {
 	rc.mu.Lock()
@@ -98,9 +104,54 @@ func (rc *ResilientClient) snapshotCursors() map[string]uint64 {
 	return out
 }
 
+// decodePublish returns the topic and sequence of a PUBLISH frame. The bool
+// is false for every other frame type or a malformed publish payload.
+func decodePublish(frame *Frame) (string, uint64, bool) {
+	if frame == nil || frame.Header.FrameType != PUBLISH {
+		return "", 0, false
+	}
+	msg, err := DecodeJSONMessage(frame)
+	if err != nil {
+		return "", 0, false
+	}
+	return msg.Action, uint64(frame.Header.StreamId), true
+}
+
 // NewResilientClient creates the client; it does not connect until Connect
-// is called. opts may be nil.
+// is called. opts may be nil. The handler receives every publish exactly
+// once and must not block.
 func NewResilientClient(addr string, onEvent EventHandler, opts *ResilientOptions) *ResilientClient {
+	return newResilientClient(addr, func(rc *ResilientClient) EventHandler {
+		return func(frame *Frame) {
+			if topic, seq, ok := decodePublish(frame); ok {
+				rc.setPublishCursor(topic, seq)
+			}
+			if onEvent != nil {
+				onEvent(frame)
+			}
+		}
+	}, opts)
+}
+
+// NewAcknowledgedResilientClient keeps reconnect cursors in step with what
+// the handler actually accepted. Returning false — typically because a
+// bounded buffer is full — rejects the publish, so the reconnect handshake
+// still asks for it again and a dropped push is replayed rather than lost.
+// Other frame types have no replay semantics and are not forwarded. The
+// handler must not block; opts may be nil.
+func NewAcknowledgedResilientClient(addr string, onAck AcknowledgingEventHandler, opts *ResilientOptions) *ResilientClient {
+	return newResilientClient(addr, func(rc *ResilientClient) EventHandler {
+		return func(frame *Frame) {
+			topic, seq, ok := decodePublish(frame)
+			if !ok || !onAck(frame) {
+				return
+			}
+			rc.setPublishCursor(topic, seq)
+		}
+	}, opts)
+}
+
+func newResilientClient(addr string, handlerFactory func(*ResilientClient) EventHandler, opts *ResilientOptions) *ResilientClient {
 	if opts == nil {
 		opts = &ResilientOptions{}
 	}
@@ -111,14 +162,7 @@ func NewResilientClient(addr string, onEvent EventHandler, opts *ResilientOption
 		cursors:    make(map[string]uint64),
 		done:       make(chan struct{}),
 	}
-	// every publish updates the replay cursor before the user handler
-	// runs, so reconnects know exactly where the client left off
-	rc.onEvent = func(frame *Frame) {
-		rc.recordCursor(frame)
-		if onEvent != nil {
-			onEvent(frame)
-		}
-	}
+	rc.onEvent = handlerFactory(rc)
 	return rc
 }
 

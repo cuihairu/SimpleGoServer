@@ -3,6 +3,7 @@ package proto
 import (
 	"errors"
 	"net"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -115,6 +116,113 @@ func TestResilientClientResubscribesWhenSessionExpired(t *testing.T) {
 			return
 		case <-time.After(100 * time.Millisecond):
 		}
+	}
+}
+
+// TestAcknowledgedResilientClientKeepsDroppedPublishReplayable pins the
+// cursor rule behind the acknowledged constructor: a full bounded buffer
+// rejects the publish, the reconnect cursor stays on the previous sequence,
+// and the server replays the rejected frame after the transport returns.
+func TestAcknowledgedResilientClientKeepsDroppedPublishReplayable(t *testing.T) {
+	addr, ph := startTCPServer(t, nil)
+
+	received := make(chan *Frame, 2)
+	var accepted atomic.Uint64
+	rc := NewAcknowledgedResilientClient(addr, func(frame *Frame) bool {
+		select {
+		case received <- frame:
+			accepted.Add(1)
+			return true
+		default:
+			return false
+		}
+	}, nil)
+	defer rc.Close()
+	if err := rc.Connect(2 * time.Second); err != nil {
+		t.Fatalf("Connect(): %v", err)
+	}
+	if err := rc.Subscribe("ticks", 2*time.Second); err != nil {
+		t.Fatalf("Subscribe(): %v", err)
+	}
+
+	// fill the two-slot bounded buffer. Both accepted publishes advance the
+	// cursor; the third is rejected and must remain older than the cursor.
+	if _, err := ph.Publish("ticks", "accepted-1"); err != nil {
+		t.Fatalf("Publish(accepted-1): %v", err)
+	}
+	if _, err := ph.Publish("ticks", "accepted-2"); err != nil {
+		t.Fatalf("Publish(accepted-2): %v", err)
+	}
+	if _, err := ph.Publish("ticks", "rejected"); err != nil {
+		t.Fatalf("Publish(rejected): %v", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for accepted.Load() < 2 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if accepted.Load() != 2 {
+		t.Fatal("the two bounded-buffer publishes never arrived before the rejected one")
+	}
+	rc.mu.Lock()
+	cursors := make(map[string]uint64, len(rc.cursors))
+	for topic, seq := range rc.cursors {
+		cursors[topic] = seq
+	}
+	rc.mu.Unlock()
+	if cursors["ticks"] != 2 {
+		t.Fatalf("cursor = %v, want sequence 2 after two accepted publishes", cursors["ticks"])
+	}
+
+	killCurrent(t, rc)
+
+	// accept everything after the reconnect: the rejected sequence must come
+	// back from replay, while the already accepted one must not.
+	deadline = time.Now().Add(3 * time.Second)
+	for {
+		if _, err := ph.Publish("ticks", "reconnect-live"); err != nil {
+			t.Fatalf("Publish after reconnect: %v", err)
+		}
+		rc.mu.Lock()
+		alive := rc.client != nil
+		rc.mu.Unlock()
+		if alive {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("client never reconnected")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	var replayed bool
+	for time.Now().Before(deadline) {
+		select {
+		case frame := <-received:
+			msg, err := DecodeJSONMessage(frame)
+			if err != nil || msg.Action != "ticks" {
+				t.Fatalf("unexpected replayed frame %v (err=%v)", frame, err)
+			}
+			if string(msg.Data) == `"rejected"` {
+				replayed = true
+			}
+			if replayed {
+				return
+			}
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+	t.Fatal("the rejected publish was never replayed")
+}
+
+func TestDecodePublishRejectsNonPublishAndMalformedPayload(t *testing.T) {
+	if _, _, ok := decodePublish(nil); ok {
+		t.Fatal("decodePublish(nil) accepted a nil frame")
+	}
+	if _, _, ok := decodePublish(&Frame{Header: FrameHeader{FrameType: RESPONSE}}); ok {
+		t.Fatal("decodePublish accepted a non-PUBLISH frame")
+	}
+	malformed := &Frame{Header: FrameHeader{FrameType: PUBLISH}, Payload: []byte("not json")}
+	if _, _, ok := decodePublish(malformed); ok {
+		t.Fatal("decodePublish accepted a malformed publish payload")
 	}
 }
 
