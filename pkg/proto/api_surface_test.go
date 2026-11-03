@@ -2,7 +2,6 @@ package proto
 
 import (
 	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -100,8 +99,9 @@ func TestResilientClientPingAndGracefulClose(t *testing.T) {
 }
 
 // TestResilientCursorSnapshot pins the replay-cursor bookkeeping:
-// recordCursor keeps the latest sequence per topic and snapshotCursors
-// returns an independent copy (or nil for an empty table).
+// setPublishCursor keeps the latest sequence per topic (monotonic, so a
+// stale replay cannot move it backwards) and snapshotCursors returns an
+// independent copy (or nil for an empty table).
 func TestResilientCursorSnapshot(t *testing.T) {
 	rc := NewResilientClient("127.0.0.1:1", nil, nil)
 	defer rc.Close()
@@ -110,23 +110,15 @@ func TestResilientCursorSnapshot(t *testing.T) {
 		t.Fatalf("snapshot of an empty table = %v, want nil", got)
 	}
 
-	pub := func(topic string, seq uint32) *Frame {
-		payload, _ := json.Marshal(&JSONMessage{Action: topic, Data: []byte("{}")})
-		return &Frame{
-			Header:  FrameHeader{FrameType: PUBLISH, StreamId: seq},
-			Payload: payload,
-		}
-	}
-	rc.recordCursor(pub("t1", 3))
-	rc.recordCursor(pub("t1", 7)) // latest wins
-	rc.recordCursor(pub("t2", 1))
-	rc.recordCursor(pub("ignored", 5))
-	rc.recordCursor(&Frame{Header: FrameHeader{FrameType: RESPONSE, StreamId: 9}}) // non-publish ignored
-	rc.recordCursor(&Frame{Header: FrameHeader{FrameType: PUBLISH, StreamId: 9}, Payload: []byte("not json")})
+	rc.setPublishCursor("t1", 3)
+	rc.setPublishCursor("t1", 7) // latest wins
+	rc.setPublishCursor("t2", 1)
+	rc.setPublishCursor("ignored", 5)
+	rc.setPublishCursor("t1", 2) // stale replay must not move it backwards
 
 	snap := rc.snapshotCursors()
 	if len(snap) != 3 || snap["t1"] != 7 || snap["t2"] != 1 || snap["ignored"] != 5 {
-		t.Fatalf("snapshot = %v, want t1:7 t2:1 ignored:5 (non-publish and bad-JSON frames skipped)", snap)
+		t.Fatalf("snapshot = %v, want t1:7 t2:1 ignored:5 (stale replay ignored, latest wins)", snap)
 	}
 
 	// mutating the snapshot must not touch the live table

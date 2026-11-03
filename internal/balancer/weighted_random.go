@@ -40,6 +40,17 @@ func (w *WeightedRandomBalancer[T]) Next(key string) (T, error) {
 		// an arbitrary backend.
 		return b, fmt.Errorf("weighted random: total weight %d is not positive", w.preSum[size])
 	}
+	// The total being positive is not enough: a backend mutated to a negative
+	// weight with the sum still positive (e.g. [+5,-1]) makes preSum
+	// non-monotonic, which breaks the sort.Search prefix-false/suffix-true
+	// premise and skews the distribution (and can leave a positive-weight
+	// backend unselected entirely). Verify every prefix is strictly increasing
+	// so the search stays well-founded.
+	for i := 1; i <= size; i++ {
+		if w.preSum[i] <= w.preSum[i-1] {
+			return b, fmt.Errorf("weighted random: backend %q mutated to a non-positive weight %d (preSum %d -> %d)", w.backends[i-1].Id(), w.backends[i-1].Weight(), w.preSum[i-1], w.preSum[i])
+		}
+	}
 	r := rand.Intn(w.preSum[size]) // #nosec G404 -- distribution fairness only, no security role
 	// Search always lands in [1, size]: preSum[size] > r rules out a miss
 	// (so index <= size) and preSum[0] == 0 > r would need r < 0 (so

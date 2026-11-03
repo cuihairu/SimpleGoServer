@@ -159,3 +159,30 @@ func TestWeightedRandomBalancer_DistributionMatchesWeights(t *testing.T) {
 		t.Fatalf("hits[b] = %d over %d draws, want roughly 75%%", hits["b"], draws)
 	}
 }
+
+// TestWeightedRandomBalancer_NextRefusesMutatedNegativeWeightWithPositiveSum
+// pins the safety net that a positive total alone cannot provide: a backend
+// mutated to a negative weight after registration (bypassing the Register
+// check) can leave the sum positive while making preSum non-monotonic. Next
+// must refuse rather than run a skewed distribution that can silently omit
+// a positive-weight backend.
+func TestWeightedRandomBalancer_NextRefusesMutatedNegativeWeightWithPositiveSum(t *testing.T) {
+	a := NewFakeBackend("a", 5)
+	b := NewFakeBackend("b", 5)
+	balancer := NewWeightedRandomBalancer[*FakeBackend]()
+	for _, backend := range []*FakeBackend{a, b} {
+		if err := balancer.Register(backend); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Mutate after the fact, bypassing the Register check, then force a
+	// preSum rebuild as a real Register/Unregister would. The sum stays
+	// positive, but preSum becomes non-monotonic: [0,5,4].
+	a.SetWeight(5)
+	b.SetWeight(-1)
+	balancer.buildPreSum()
+	if _, err := balancer.Next("k"); err == nil {
+		t.Fatal("Next on a mutated negative weight with a positive total must fail, not skew the distribution")
+	}
+}

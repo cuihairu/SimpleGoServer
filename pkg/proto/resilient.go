@@ -62,32 +62,61 @@ type ResilientClient struct {
 	client     *Client
 	token      string
 	subscribed map[string]struct{}
-	cursors    map[string]uint64 // topic -> last seen publish sequence
-	closed     bool
-	done       chan struct{}
-	closeOnce  sync.Once
-}
-
-// recordCursor notes the sequence number of a publish as the replay cursor
-// for its topic. Called for every publish before the user handler sees it,
-// so a panicking or slow handler cannot lose the update.
-func (rc *ResilientClient) recordCursor(frame *Frame) {
-	if frame.Header.FrameType != PUBLISH {
-		return
-	}
-	msg, err := DecodeJSONMessage(frame)
-	if err != nil {
-		return
-	}
-	rc.mu.Lock()
-	rc.cursors[msg.Action] = uint64(frame.Header.StreamId)
-	rc.mu.Unlock()
+	// cursors is the contiguous accepted prefix per topic. acceptedGaps
+	// holds accepted sequences beyond that prefix until the rejected gap is
+	// replayed, so a single monotonic cursor can represent a sparse set.
+	cursors      map[string]uint64
+	acceptedGaps map[string]map[uint64]struct{}
+	closed       bool
+	done         chan struct{}
+	closeOnce    sync.Once
 }
 
 func (rc *ResilientClient) setPublishCursor(topic string, seq uint64) {
 	rc.mu.Lock()
-	rc.cursors[topic] = seq
+	if rc.cursors == nil {
+		rc.cursors = make(map[string]uint64)
+	}
+	if seq > rc.cursors[topic] {
+		rc.cursors[topic] = seq
+	}
 	rc.mu.Unlock()
+}
+
+func (rc *ResilientClient) acknowledgePublish(topic string, seq uint64) {
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
+	if rc.cursors == nil {
+		rc.cursors = make(map[string]uint64)
+	}
+	if seq <= rc.cursors[topic] {
+		return
+	}
+	if seq != rc.cursors[topic]+1 {
+		if rc.acceptedGaps == nil {
+			rc.acceptedGaps = make(map[string]map[uint64]struct{})
+		}
+		gaps := rc.acceptedGaps[topic]
+		if gaps == nil {
+			gaps = make(map[uint64]struct{})
+			rc.acceptedGaps[topic] = gaps
+		}
+		gaps[seq] = struct{}{}
+		return
+	}
+	rc.cursors[topic] = seq
+	gaps := rc.acceptedGaps[topic]
+	for len(gaps) > 0 {
+		next := rc.cursors[topic] + 1
+		if _, ok := gaps[next]; !ok {
+			break
+		}
+		delete(gaps, next)
+		rc.cursors[topic] = next
+	}
+	if len(gaps) == 0 {
+		delete(rc.acceptedGaps, topic)
+	}
 }
 
 // snapshotCursors copies the cursor table for the resume handshake.
@@ -146,7 +175,7 @@ func NewAcknowledgedResilientClient(addr string, onAck AcknowledgingEventHandler
 			if !ok || !onAck(frame) {
 				return
 			}
-			rc.setPublishCursor(topic, seq)
+			rc.acknowledgePublish(topic, seq)
 		}
 	}, opts)
 }
@@ -156,11 +185,12 @@ func newResilientClient(addr string, handlerFactory func(*ResilientClient) Event
 		opts = &ResilientOptions{}
 	}
 	rc := &ResilientClient{
-		addr:       addr,
-		opts:       opts,
-		subscribed: make(map[string]struct{}),
-		cursors:    make(map[string]uint64),
-		done:       make(chan struct{}),
+		addr:         addr,
+		opts:         opts,
+		subscribed:   make(map[string]struct{}),
+		cursors:      make(map[string]uint64),
+		acceptedGaps: make(map[string]map[uint64]struct{}),
+		done:         make(chan struct{}),
 	}
 	rc.onEvent = handlerFactory(rc)
 	return rc

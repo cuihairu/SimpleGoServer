@@ -173,7 +173,14 @@ func TestAcknowledgedResilientClientKeepsDroppedPublishReplayable(t *testing.T) 
 		t.Fatalf("cursor = %v, want sequence 2 after two accepted publishes", cursors["ticks"])
 	}
 
-	killCurrent(t, rc)
+	// Empty the bounded buffer before dropping the transport. Otherwise the
+	// replay can arrive before this test drains accepted-1/2, be rejected by
+	// the still-full consumer, and make the final assertion depend on timing.
+	for len(received) > 0 {
+		<-received
+	}
+
+	dead := killCurrent(t, rc)
 
 	// accept everything after the reconnect: the rejected sequence must come
 	// back from replay, while the already accepted one must not.
@@ -183,7 +190,7 @@ func TestAcknowledgedResilientClientKeepsDroppedPublishReplayable(t *testing.T) 
 			t.Fatalf("Publish after reconnect: %v", err)
 		}
 		rc.mu.Lock()
-		alive := rc.client != nil
+		alive := rc.client != nil && rc.client != dead
 		rc.mu.Unlock()
 		if alive {
 			break
@@ -336,5 +343,38 @@ func TestResilientClientReconnectLoopExits(t *testing.T) {
 	}()
 	if rc2.reconnectLoop() {
 		t.Fatal("reconnectLoop after Close must return false")
+	}
+}
+
+// TestAcknowledgedCursorKeepsContiguousPrefix pins the sparse-set cursor rule
+// behind the acknowledged constructor: a single monotonic cursor per topic
+// cannot express "accepted 1,2 and 4 but rejected 3", so the cursor must stay
+// on the contiguous accepted prefix (2) until the gap (3) is accepted, and
+// then leap over it. An out-of-order (replayed) accept already at or below
+// the cursor must not move it backwards or re-trigger delivery bookkeeping.
+func TestAcknowledgedCursorKeepsContiguousPrefix(t *testing.T) {
+	rc := &ResilientClient{
+		cursors:      map[string]uint64{},
+		acceptedGaps: map[string]map[uint64]struct{}{},
+	}
+
+	rc.acknowledgePublish("t", 1) // contiguous: cursor 1
+	rc.acknowledgePublish("t", 2) // contiguous: cursor 2
+	rc.acknowledgePublish("t", 4) // gap after 3: cursor stays 2
+	rc.acknowledgePublish("t", 3) // fills the gap: cursor leaps 2 -> 4
+
+	if got := rc.cursors["t"]; got != 4 {
+		t.Fatalf("cursor = %d, want 4 after accepting 1,2,4 then the missing 3", got)
+	}
+	if rc.acceptedGaps["t"] != nil {
+		t.Fatalf("acceptedGaps = %v, want empty after the gap was filled", rc.acceptedGaps["t"])
+	}
+
+	// A replayed accept at or below the cursor (a duplicate delivery, or a
+	// stale frame) must not move it.
+	rc.acknowledgePublish("t", 2)
+	rc.acknowledgePublish("t", 4)
+	if got := rc.cursors["t"]; got != 4 {
+		t.Fatalf("cursor after stale/replayed accept = %d, want 4", got)
 	}
 }
