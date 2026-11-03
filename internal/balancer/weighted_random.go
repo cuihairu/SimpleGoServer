@@ -29,9 +29,6 @@ func (w *WeightedRandomBalancer[T]) Next(key string) (T, error) {
 	if size == 0 {
 		return b, fmt.Errorf("no backends")
 	}
-	if size == 1 {
-		return w.backends[0], nil
-	}
 	if w.preSum[size] <= 0 {
 		// Register rejects non-positive weights, so a non-positive total is
 		// only reachable if a registered backend's weight was mutated to zero

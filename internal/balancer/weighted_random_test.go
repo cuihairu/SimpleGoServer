@@ -126,6 +126,21 @@ func TestWeightedRandomBalancer_NextRefusesMutatedNonPositiveWeight(t *testing.T
 	}
 }
 
+// A one-backend shortcut would bypass all preSum validation and hide a
+// post-registration mutation from callers.
+func TestWeightedRandomBalancer_NextRefusesMutatedSingleNonPositiveWeight(t *testing.T) {
+	backend := NewFakeBackend("only", 5)
+	balancer := NewWeightedRandomBalancer[*FakeBackend]()
+	if err := balancer.Register(backend); err != nil {
+		t.Fatal(err)
+	}
+	backend.SetWeight(0)
+	balancer.buildPreSum()
+	if _, err := balancer.Next("k"); err == nil {
+		t.Fatal("single-backend Next on a mutated non-positive weight must fail")
+	}
+}
+
 // TestWeightedRandomBalancer_DistributionMatchesWeights verifies the
 // selection frequency follows the weights on a positive-only table: a 1:3
 // split must hit the heavier backend far more often, and both must be
