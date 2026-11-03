@@ -59,6 +59,79 @@ func TestResilientClientUnsubscribeStopsPushes(t *testing.T) {
 	}
 }
 
+// TestAcknowledgedClientUnsubscribeClearsReplayState pins the contract that
+// forgetting a topic also forgets the acknowledged-replay bookkeeping. The
+// server resets a topic's publish sequence to 1 once the last subscriber or
+// session releases it; a stale cursor must not silently drop the fresh
+// publishes of a later subscription.
+func TestAcknowledgedClientUnsubscribeClearsReplayState(t *testing.T) {
+	addr, ph := startTCPServer(t, nil)
+
+	received := make(chan string, 8)
+	rc := NewAcknowledgedResilientClient(addr, func(frame *Frame) bool {
+		msg, err := DecodeJSONMessage(frame)
+		if err != nil {
+			return false
+		}
+		select {
+		case received <- string(msg.Data):
+			return true
+		default:
+			return false
+		}
+	}, nil)
+	defer rc.Close()
+	if err := rc.Connect(2 * time.Second); err != nil {
+		t.Fatalf("Connect(): %v", err)
+	}
+	if err := rc.Subscribe("t", 2*time.Second); err != nil {
+		t.Fatalf("Subscribe(): %v", err)
+	}
+	for _, payload := range []string{"one", "two"} {
+		if _, err := ph.Publish("t", payload); err != nil {
+			t.Fatalf("Publish(%s): %v", payload, err)
+		}
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for len(received) < 2 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if len(received) != 2 {
+		t.Fatalf("received %d initial publishes, want 2", len(received))
+	}
+	// Drain the buffer so the re-subscribe assertion below observes only the
+	// fresh publish rather than a leftover from before Unsubscribe.
+	for len(received) > 0 {
+		<-received
+	}
+
+	if err := rc.Unsubscribe("t", 2*time.Second); err != nil {
+		t.Fatalf("Unsubscribe(): %v", err)
+	}
+	rc.mu.Lock()
+	_, cursorKept := rc.cursors["t"]
+	_, acceptedKept := rc.acceptedPublishes["t"]
+	rc.mu.Unlock()
+	if cursorKept || acceptedKept {
+		t.Fatalf("replay state survived Unsubscribe: cursor=%v accepted=%v", cursorKept, acceptedKept)
+	}
+
+	if err := rc.Subscribe("t", 2*time.Second); err != nil {
+		t.Fatalf("Subscribe() again: %v", err)
+	}
+	if _, err := ph.Publish("t", "fresh"); err != nil {
+		t.Fatalf("Publish() after re-subscribe: %v", err)
+	}
+	select {
+	case got := <-received:
+		if got != `"fresh"` {
+			t.Fatalf("push after re-subscribe = %s, want \"fresh\"", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("fresh publish dropped after re-subscribe — stale cursor survived Unsubscribe")
+	}
+}
+
 // TestResilientClientPingAndGracefulClose covers the remaining thin
 // wrappers: Ping round-trips on the current connection, CloseGracefully
 // says goodbye and stops the client for good, and every later call sees

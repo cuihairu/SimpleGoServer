@@ -279,6 +279,11 @@ func (rc *ResilientClient) Unsubscribe(topic string, timeout time.Duration) erro
 	}
 	rc.mu.Lock()
 	delete(rc.subscribed, topic)
+	// The server may reset the topic sequence once no subscriber or session
+	// records it; clearing replay state prevents stale cursors from dropping
+	// fresh publishes if the topic is subscribed again.
+	delete(rc.cursors, topic)
+	delete(rc.acceptedPublishes, topic)
 	rc.mu.Unlock()
 	return nil
 }

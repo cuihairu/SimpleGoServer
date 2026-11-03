@@ -445,14 +445,14 @@ func TestAcknowledgedClientDoesNotRedeliverAcceptedGapAfterReplay(t *testing.T) 
 		t.Fatalf("received %d initial publishes, want 3", len(received))
 	}
 
-	killCurrent(t, rc)
+	dead := killCurrent(t, rc)
 	reconnected := make(chan struct{})
 	go func() {
 		defer close(reconnected)
 		deadline := time.Now().Add(3 * time.Second)
 		for time.Now().Before(deadline) {
 			rc.mu.Lock()
-			alive := rc.client != nil
+			alive := rc.client != nil && rc.client != dead
 			rc.mu.Unlock()
 			if alive {
 				return
