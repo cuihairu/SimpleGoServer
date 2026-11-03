@@ -126,6 +126,14 @@ func TestResilientCursorSnapshot(t *testing.T) {
 	if again := rc.snapshotCursors(); again["t1"] != 7 {
 		t.Fatalf("snapshot mutation leaked into the live table: %v", again)
 	}
+
+	rc.mu.Lock()
+	rc.cursors = nil
+	rc.mu.Unlock()
+	rc.setPublishCursor("fresh", 1)
+	if got := rc.snapshotCursors()["fresh"]; got != 1 {
+		t.Fatalf("cursor initialized from nil = %d, want 1", got)
+	}
 }
 
 // TestResilientOptionsDefaults covers the option normalizers: unset fields

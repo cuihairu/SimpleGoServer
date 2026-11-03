@@ -81,11 +81,11 @@ type ProtocolHandler struct {
 	handleRequest RequestHandler
 	logger        *log.Logger
 
-	mu    sync.RWMutex
-	subs  map[string]map[net.Conn]struct{}
-	pings atomic.Uint64
-	pongs atomic.Uint64
-	seq   atomic.Uint32
+	mu        sync.RWMutex
+	subs      map[string]map[net.Conn]struct{}
+	pings     atomic.Uint64
+	pongs     atomic.Uint64
+	topicSeqs map[string]*atomic.Uint32
 
 	// resumable sessions, see handleHello. connTokens is the reverse index
 	// so a SUBSCRIBE frame can find the session to record the topic in
@@ -170,6 +170,7 @@ func NewProtocolHandler(handleRequest RequestHandler) *ProtocolHandler {
 		sessions:      make(map[string]*session),
 		connTokens:    make(map[net.Conn]string),
 		topicCache:    make(map[string][]cachedPublish),
+		topicSeqs:     make(map[string]*atomic.Uint32),
 		cacheBudget:   defaultCacheBudget,
 		closed:        make(chan struct{}),
 		sessionTTL:    defaultSessionTTL,
@@ -515,6 +516,7 @@ func (p *ProtocolHandler) dropTopicCacheLocked(topic string) {
 	}
 	p.cacheBytes -= frameBytes(p.topicCache[topic])
 	delete(p.topicCache, topic)
+	delete(p.topicSeqs, topic)
 }
 
 // sessionRecordsTopicLocked reports whether any session — including a
@@ -587,6 +589,9 @@ func (p *ProtocolHandler) handleSubscribe(ctx handler.InboundContext, frame *Fra
 			s.lastSeen.Store(time.Now().UnixNano())
 		}
 	}
+	if !subscribe {
+		p.dropTopicCacheLocked(topic)
+	}
 	p.mu.Unlock()
 
 	verb, payload := "subscribed", map[string]string{"topic": topic}
@@ -636,7 +641,14 @@ func (p *ProtocolHandler) Publish(topic string, payload any) (int, error) {
 		return 0, nil
 	}
 
-	frame := newFrame(PUBLISH, p.seq.Add(1), mustJSON(topic, body))
+	p.mu.Lock()
+	topicSeq := p.topicSeqs[topic]
+	if topicSeq == nil {
+		topicSeq = &atomic.Uint32{}
+		p.topicSeqs[topic] = topicSeq
+	}
+	p.mu.Unlock()
+	frame := newFrame(PUBLISH, topicSeq.Add(1), mustJSON(topic, body))
 	buf, err := Encode(frame)
 	if err != nil {
 		return 0, err

@@ -2,6 +2,7 @@ package proto
 
 import (
 	"errors"
+	"fmt"
 	"net"
 	"sync/atomic"
 	"testing"
@@ -350,31 +351,202 @@ func TestResilientClientReconnectLoopExits(t *testing.T) {
 // behind the acknowledged constructor: a single monotonic cursor per topic
 // cannot express "accepted 1,2 and 4 but rejected 3", so the cursor must stay
 // on the contiguous accepted prefix (2) until the gap (3) is accepted, and
-// then leap over it. An out-of-order (replayed) accept already at or below
-// the cursor must not move it backwards or re-trigger delivery bookkeeping.
+// then leap over it. Buffered accepts collapse once the older gaps are filled.
 func TestAcknowledgedCursorKeepsContiguousPrefix(t *testing.T) {
-	rc := &ResilientClient{
-		cursors:      map[string]uint64{},
-		acceptedGaps: map[string]map[uint64]struct{}{},
-	}
+	rc := &ResilientClient{}
 
-	rc.acknowledgePublish("t", 1) // contiguous: cursor 1
-	rc.acknowledgePublish("t", 2) // contiguous: cursor 2
-	rc.acknowledgePublish("t", 4) // gap after 3: cursor stays 2
-	rc.acknowledgePublish("t", 3) // fills the gap: cursor leaps 2 -> 4
+	rc.acknowledgePublish("t", 1)
+	rc.acknowledgePublish("t", 2)
+	rc.acknowledgePublish("t", 4)
+	if rc.shouldDeliverPublish("t", 4) {
+		t.Fatal("an already accepted gap must be filtered on replay")
+	}
+	rc.acknowledgePublish("t", 3)
+	rc.acknowledgePublish("t", 6)
 
 	if got := rc.cursors["t"]; got != 4 {
 		t.Fatalf("cursor = %d, want 4 after accepting 1,2,4 then the missing 3", got)
 	}
-	if rc.acceptedGaps["t"] != nil {
-		t.Fatalf("acceptedGaps = %v, want empty after the gap was filled", rc.acceptedGaps["t"])
+	if len(rc.acceptedPublishes["t"]) != 1 {
+		t.Fatalf("acceptedPublishes = %v, want the unfilled sequence 6", rc.acceptedPublishes["t"])
 	}
 
-	// A replayed accept at or below the cursor (a duplicate delivery, or a
-	// stale frame) must not move it.
-	rc.acknowledgePublish("t", 2)
 	rc.acknowledgePublish("t", 4)
-	if got := rc.cursors["t"]; got != 4 {
-		t.Fatalf("cursor after stale/replayed accept = %d, want 4", got)
+	rc.acknowledgePublish("t", 5)
+	rc.acknowledgePublish("t", 6)
+	rc.acknowledgePublish("t", 7)
+	rc.acknowledgePublish("t", 9)
+	rc.acknowledgePublish("t", 11)
+
+	if got := rc.cursors["t"]; got != 7 {
+		t.Fatalf("cursor = %d, want 7 after filling the remaining gap", got)
+	}
+	if len(rc.acceptedPublishes["t"]) != 2 {
+		t.Fatalf("acceptedPublishes = %v, want unfilled sequences 9 and 11", rc.acceptedPublishes["t"])
+	}
+	rc.acknowledgePublish("t", 8)
+	rc.acknowledgePublish("t", 10)
+	if got := rc.cursors["t"]; got != 11 {
+		t.Fatalf("cursor = %d, want 11 after filling the final gaps", got)
+	}
+	if rc.acceptedPublishes["t"] != nil {
+		t.Fatalf("acceptedPublishes = %v, want empty after every gap was filled", rc.acceptedPublishes["t"])
+	}
+	rc.acknowledgePublish("t", 12)
+	rc.acknowledgePublish("t", 13)
+	if got := rc.cursors["t"]; got != 13 {
+		t.Fatalf("cursor after contiguous replay = %d, want 13", got)
+	}
+}
+
+// TestAcknowledgedClientDoesNotRedeliverAcceptedGapAfterReplay covers the
+// sparse acceptance case end to end: sequence 3 is rejected while 4 is
+// accepted, so the cursor stays at 2. On reconnect the server replays 3;
+// sequence 4 must be withheld until accepting 3 completes the prefix.
+func TestAcknowledgedClientDoesNotRedeliverAcceptedGapAfterReplay(t *testing.T) {
+	addr, ph := startTCPServer(t, nil)
+
+	received := make(chan string, 4)
+	var rejectedCalls atomic.Uint64
+	rc := NewAcknowledgedResilientClient(addr, func(frame *Frame) bool {
+		msg, err := DecodeJSONMessage(frame)
+		if err != nil {
+			return false
+		}
+		payload := string(msg.Data)
+		if payload == `"rejected"` && rejectedCalls.Add(1) == 1 {
+			return false
+		}
+		select {
+		case received <- payload:
+			return true
+		default:
+			return false
+		}
+	}, nil)
+	defer rc.Close()
+	if err := rc.Connect(2 * time.Second); err != nil {
+		t.Fatalf("Connect(): %v", err)
+	}
+	if err := rc.Subscribe("ticks", 2*time.Second); err != nil {
+		t.Fatalf("Subscribe(): %v", err)
+	}
+
+	for _, payload := range []string{"accepted-1", "accepted-2", "rejected", "accepted-gap"} {
+		if _, err := ph.Publish("ticks", payload); err != nil {
+			t.Fatalf("Publish(%s): %v", payload, err)
+		}
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for len(received) < 3 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if len(received) != 3 {
+		t.Fatalf("received %d initial publishes, want 3", len(received))
+	}
+
+	killCurrent(t, rc)
+	reconnected := make(chan struct{})
+	go func() {
+		defer close(reconnected)
+		deadline := time.Now().Add(3 * time.Second)
+		for time.Now().Before(deadline) {
+			rc.mu.Lock()
+			alive := rc.client != nil
+			rc.mu.Unlock()
+			if alive {
+				return
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}()
+	select {
+	case <-reconnected:
+	case <-time.After(3 * time.Second):
+		t.Fatal("client never reconnected")
+	}
+
+	for rejectedCalls.Load() < 2 {
+		if time.Now().After(deadline) {
+			t.Fatal("the rejected publish was never replayed")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	want := []string{`"accepted-1"`, `"accepted-2"`, `"accepted-gap"`, `"rejected"`}
+	for _, expected := range want {
+		select {
+		case got := <-received:
+			if got != expected {
+				t.Fatalf("delivery after replay = %s, want %s", got, expected)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("publish %s was not delivered in replay order", expected)
+		}
+	}
+	select {
+	case got := <-received:
+		t.Fatalf("unexpected extra delivery after replay: %s", got)
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+// TestPublishSequenceIsPerTopic pins the replay-contract invariant: PUBLISH
+// StreamIds are contiguous within each topic, independent of interleaved
+// publishes on other topics.
+func TestPublishSequenceIsPerTopic(t *testing.T) {
+	addr, ph := startTCPServer(t, nil)
+
+	pushes := make(chan *Frame, 6)
+	rc := NewResilientClient(addr, func(frame *Frame) { pushes <- frame }, nil)
+	defer rc.Close()
+	if err := rc.Connect(2 * time.Second); err != nil {
+		t.Fatalf("Connect(): %v", err)
+	}
+	for _, topic := range []string{"one", "two"} {
+		if err := rc.Subscribe(topic, 2*time.Second); err != nil {
+			t.Fatalf("Subscribe(%s): %v", topic, err)
+		}
+	}
+	for i := 0; i < 3; i++ {
+		for _, topic := range []string{"one", "two"} {
+			if _, err := ph.Publish(topic, i); err != nil {
+				t.Fatalf("Publish(%s): %v", topic, err)
+			}
+		}
+	}
+
+	sequences := map[string][]uint64{}
+	deadline := time.After(2 * time.Second)
+	for len(sequences["one"]) < 3 || len(sequences["two"]) < 3 {
+		select {
+		case frame := <-pushes:
+			msg, err := DecodeJSONMessage(frame)
+			if err != nil {
+				t.Fatal(err)
+			}
+			sequences[msg.Action] = append(sequences[msg.Action], uint64(frame.Header.StreamId))
+		case <-deadline:
+			t.Fatalf("timed out collecting publishes: %v", sequences)
+		}
+	}
+	for topic, got := range sequences {
+		want := []uint64{1, 2, 3}
+		if fmt.Sprint(got) != fmt.Sprint(want) {
+			t.Fatalf("%s sequences = %v, want %v", topic, got, want)
+		}
+	}
+
+	for _, topic := range []string{"one", "two"} {
+		if err := rc.Unsubscribe(topic, 2*time.Second); err != nil {
+			t.Fatalf("Unsubscribe(%s): %v", topic, err)
+		}
+	}
+	rc.Close()
+	ph.Close()
+	ph.mu.Lock()
+	_, seqExists := ph.topicSeqs["one"]
+	ph.mu.Unlock()
+	if seqExists {
+		t.Fatal("topic sequence state leaked after all subscriptions and sessions released it")
 	}
 }

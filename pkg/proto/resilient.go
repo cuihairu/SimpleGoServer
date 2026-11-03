@@ -62,14 +62,15 @@ type ResilientClient struct {
 	client     *Client
 	token      string
 	subscribed map[string]struct{}
-	// cursors is the contiguous accepted prefix per topic. acceptedGaps
-	// holds accepted sequences beyond that prefix until the rejected gap is
-	// replayed, so a single monotonic cursor can represent a sparse set.
-	cursors      map[string]uint64
-	acceptedGaps map[string]map[uint64]struct{}
-	closed       bool
-	done         chan struct{}
-	closeOnce    sync.Once
+	// cursors is the contiguous accepted prefix per topic. acceptedPublishes
+	// holds accepted sequences beyond that prefix until every older rejected
+	// frame is replayed; it also suppresses duplicate delivery while that
+	// sparse set is represented by a single cursor.
+	cursors           map[string]uint64
+	acceptedPublishes map[string]map[uint64]struct{}
+	closed            bool
+	done              chan struct{}
+	closeOnce         sync.Once
 }
 
 func (rc *ResilientClient) setPublishCursor(topic string, seq uint64) {
@@ -83,39 +84,51 @@ func (rc *ResilientClient) setPublishCursor(topic string, seq uint64) {
 	rc.mu.Unlock()
 }
 
+func (rc *ResilientClient) shouldDeliverPublish(topic string, seq uint64) bool {
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
+	if seq <= rc.cursors[topic] {
+		return false
+	}
+	if _, accepted := rc.acceptedPublishes[topic][seq]; accepted {
+		return false
+	}
+	return true
+}
+
 func (rc *ResilientClient) acknowledgePublish(topic string, seq uint64) {
 	rc.mu.Lock()
 	defer rc.mu.Unlock()
-	if rc.cursors == nil {
-		rc.cursors = make(map[string]uint64)
-	}
 	if seq <= rc.cursors[topic] {
 		return
 	}
+	if rc.cursors == nil {
+		rc.cursors = make(map[string]uint64)
+	}
 	if seq != rc.cursors[topic]+1 {
-		if rc.acceptedGaps == nil {
-			rc.acceptedGaps = make(map[string]map[uint64]struct{})
+		if rc.acceptedPublishes == nil {
+			rc.acceptedPublishes = make(map[string]map[uint64]struct{})
 		}
-		gaps := rc.acceptedGaps[topic]
-		if gaps == nil {
-			gaps = make(map[uint64]struct{})
-			rc.acceptedGaps[topic] = gaps
+		accepted := rc.acceptedPublishes[topic]
+		if accepted == nil {
+			accepted = make(map[uint64]struct{})
+			rc.acceptedPublishes[topic] = accepted
 		}
-		gaps[seq] = struct{}{}
+		accepted[seq] = struct{}{}
 		return
 	}
 	rc.cursors[topic] = seq
-	gaps := rc.acceptedGaps[topic]
-	for len(gaps) > 0 {
+	accepted := rc.acceptedPublishes[topic]
+	for len(accepted) > 0 {
 		next := rc.cursors[topic] + 1
-		if _, ok := gaps[next]; !ok {
+		if _, ok := accepted[next]; !ok {
 			break
 		}
-		delete(gaps, next)
+		delete(accepted, next)
 		rc.cursors[topic] = next
 	}
-	if len(gaps) == 0 {
-		delete(rc.acceptedGaps, topic)
+	if len(accepted) == 0 {
+		delete(rc.acceptedPublishes, topic)
 	}
 }
 
@@ -172,10 +185,12 @@ func NewAcknowledgedResilientClient(addr string, onAck AcknowledgingEventHandler
 	return newResilientClient(addr, func(rc *ResilientClient) EventHandler {
 		return func(frame *Frame) {
 			topic, seq, ok := decodePublish(frame)
-			if !ok || !onAck(frame) {
+			if !ok || !rc.shouldDeliverPublish(topic, seq) {
 				return
 			}
-			rc.acknowledgePublish(topic, seq)
+			if onAck(frame) {
+				rc.acknowledgePublish(topic, seq)
+			}
 		}
 	}, opts)
 }
@@ -185,12 +200,12 @@ func newResilientClient(addr string, handlerFactory func(*ResilientClient) Event
 		opts = &ResilientOptions{}
 	}
 	rc := &ResilientClient{
-		addr:         addr,
-		opts:         opts,
-		subscribed:   make(map[string]struct{}),
-		cursors:      make(map[string]uint64),
-		acceptedGaps: make(map[string]map[uint64]struct{}),
-		done:         make(chan struct{}),
+		addr:              addr,
+		opts:              opts,
+		subscribed:        make(map[string]struct{}),
+		cursors:           make(map[string]uint64),
+		acceptedPublishes: make(map[string]map[uint64]struct{}),
+		done:              make(chan struct{}),
 	}
 	rc.onEvent = handlerFactory(rc)
 	return rc
