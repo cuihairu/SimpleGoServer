@@ -592,13 +592,32 @@ func (p *ProtocolHandler) handleSubscribe(ctx handler.InboundContext, frame *Fra
 	if !subscribe {
 		p.dropTopicCacheLocked(topic)
 	}
+	lastSeq := p.topicSequenceLocked(topic)
 	p.mu.Unlock()
 
-	verb, payload := "subscribed", map[string]string{"topic": topic}
+	verb, payload := "subscribed", any(&SubscribeResponse{
+		Topic:   topic,
+		LastSeq: lastSeq,
+	})
 	if !subscribe {
-		verb, payload = "unsubscribed", map[string]string{"topic": topic}
+		verb, payload = "unsubscribed", any(map[string]string{"topic": topic})
 	}
 	p.reply(ctx, RESPONSE, frame.Header.StreamId, verb, payload)
+}
+
+// topicSequenceLocked reports the last publish sequence assigned to topic,
+// or zero when the topic was never published to (or its replay state was
+// released). A client can use it to distinguish a freshly reset topic
+// sequence from one that survived while it was disconnected. The caller
+// holds p.mu.
+func (p *ProtocolHandler) topicSequenceLocked(topic string) uint64 {
+	if seq := p.topicSeqs[topic]; seq != nil {
+		// topicSeqs entries are minted in Publish immediately before
+		// Add(1), so a live entry is always >= 1: the zero floor can only
+		// mean the topic's replay state was released (seq == nil).
+		return uint64(seq.Load()) // #nosec G115 -- uint32 is losslessly convertible
+	}
+	return 0
 }
 
 // topicOf extracts the topic name carried in the frame's JSON action field.

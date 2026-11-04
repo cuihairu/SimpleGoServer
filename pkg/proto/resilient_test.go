@@ -636,15 +636,258 @@ func TestAcknowledgedClientClearsReplayStateOnSessionExpiry(t *testing.T) {
 		t.Fatal("client never reconnected after session expiry")
 	}
 
-	if _, err := ph.Publish("t", "fresh"); err != nil {
-		t.Fatalf("Publish() after session-expired reconnect: %v", err)
+	// swap installs the new client before its async re-subscribe reaches
+	// the server, so a single publish can land before SUBSCRIBE and be
+	// silently dropped (the same retry pattern used by the earlier
+	// reconnect tests above). Loop until the fresh push is observed.
+	deadline = time.Now().Add(2 * time.Second)
+	got := ""
+	for time.Now().Before(deadline) {
+		if _, err := ph.Publish("t", "fresh"); err != nil {
+			t.Fatalf("Publish() after session-expired reconnect: %v", err)
+		}
+		select {
+		case got = <-received:
+			if got != `"fresh"` {
+				t.Fatalf("push after session-expired reconnect = %s, want \"fresh\"", got)
+			}
+		case <-time.After(200 * time.Millisecond):
+			got = ""
+		}
+		if got == `"fresh"` {
+			break
+		}
+	}
+	if got != `"fresh"` {
+		t.Fatal("fresh publish dropped after session-expired reconnect — stale cursor survived")
+	}
+}
+
+// TestAcknowledgedClientKeepsCursorWhenSequenceSurvives pins the companion
+// case to TestAcknowledgedClientClearsReplayStateOnSessionExpiry: when a
+// second session still records the topic, the server keeps its per-topic
+// sequence and replay cache, so a reconnect that cannot resume must NOT
+// clear the client cursor. Clearing it would park every continued publish
+// in acceptedPublishes (unbounded) and replay the whole cache on the next
+// resume, redelivering frames the client already accepted.
+func TestAcknowledgedClientKeepsCursorWhenSequenceSurvives(t *testing.T) {
+	addr, ph := startTCPServer(t, nil)
+
+	received := make(chan string, 8)
+	rc := NewAcknowledgedResilientClient(addr, func(frame *Frame) bool {
+		msg, err := DecodeJSONMessage(frame)
+		if err != nil {
+			return false
+		}
+		select {
+		case received <- string(msg.Data):
+			return true
+		default:
+			return false
+		}
+	}, nil)
+	defer rc.Close()
+	if err := rc.Connect(2 * time.Second); err != nil {
+		t.Fatalf("Connect(): %v", err)
+	}
+	if err := rc.Subscribe("t", 2*time.Second); err != nil {
+		t.Fatalf("Subscribe(): %v", err)
+	}
+	// A second subscriber on a separate connection keeps the topic alive
+	// server-side even after rc's session expires, so the per-topic
+	// sequence and replay cache survive.
+	other, err := Dial(addr, nil)
+	if err != nil {
+		t.Fatalf("Dial other: %v", err)
+	}
+	defer other.Close()
+	if err := other.Subscribe("t", 2*time.Second); err != nil {
+		t.Fatalf("other Subscribe(): %v", err)
+	}
+	for _, payload := range []string{"one", "two", "three"} {
+		if _, err := ph.Publish("t", payload); err != nil {
+			t.Fatalf("Publish(%s): %v", payload, err)
+		}
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for len(received) < 3 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if len(received) != 3 {
+		t.Fatalf("received %d initial publishes, want 3", len(received))
+	}
+	rc.mu.Lock()
+	cursorBefore := rc.cursors["t"]
+	rc.mu.Unlock()
+	if cursorBefore != 3 {
+		t.Fatalf("cursor before expiry = %d, want 3", cursorBefore)
+	}
+	// Drain so the assertions below observe only the post-reconnect frames.
+	for len(received) > 0 {
+		<-received
+	}
+
+	// Expire only rc's session; the other session keeps the topic sequence
+	// and replay cache alive.
+	rc.mu.Lock()
+	token := rc.token
+	rc.mu.Unlock()
+	ph.mu.RLock()
+	var s *session
+	for tok, sess := range ph.sessions {
+		if tok == token {
+			s = sess
+		}
+	}
+	ph.mu.RUnlock()
+	if s == nil {
+		t.Fatal("rc session not found on the server")
+	}
+	s.lastSeen.Store(time.Now().Add(-ph.sessionTTL - time.Second).UnixNano())
+	ph.reapExpiredSessions()
+
+	dead := killCurrent(t, rc)
+	reconnected := make(chan struct{})
+	go func() {
+		defer close(reconnected)
+		deadline := time.Now().Add(3 * time.Second)
+		for time.Now().Before(deadline) {
+			rc.mu.Lock()
+			alive := rc.client != nil && rc.client != dead
+			rc.mu.Unlock()
+			if alive {
+				return
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}()
+	select {
+	case <-reconnected:
+	case <-time.After(3 * time.Second):
+		t.Fatal("client never reconnected after its session expired")
+	}
+
+	rc.mu.Lock()
+	cursorAfter := rc.cursors["t"]
+	acceptedLen := len(rc.acceptedPublishes["t"])
+	rc.mu.Unlock()
+	if cursorAfter != 3 {
+		t.Fatalf("cursor after reconnect = %d, want 3 (sequence survived, must not be cleared)", cursorAfter)
+	}
+	if acceptedLen != 0 {
+		t.Fatalf("acceptedPublishes after reconnect has %d entries, want 0 (no unbounded growth)", acceptedLen)
+	}
+
+	// The async re-subscribe may still be in flight, so loop-publish until
+	// the continued frame is observed; the cursor must survive regardless.
+	deadline = time.Now().Add(2 * time.Second)
+	got := ""
+	for time.Now().Before(deadline) {
+		if _, err := ph.Publish("t", "four"); err != nil {
+			t.Fatalf("Publish(four): %v", err)
+		}
+		select {
+		case got = <-received:
+		case <-time.After(200 * time.Millisecond):
+			got = ""
+		}
+		if got == `"four"` {
+			break
+		}
+	}
+	if got != `"four"` {
+		t.Fatal("continued publish dropped after reconnect — cursor was cleared")
 	}
 	select {
 	case got := <-received:
-		if got != `"fresh"` {
-			t.Fatalf("push after session-expired reconnect = %s, want \"fresh\"", got)
+		t.Fatalf("unexpected extra delivery after reconnect: %s", got)
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+// TestResilientClientKeepsCursorWhenSequenceSurvives covers the plain
+// (non-acknowledged) constructor on the same path: its reconnect also
+// shares the swap alignment, so a survived sequence must keep the cursor
+// instead of clearing it to zero.
+func TestResilientClientKeepsCursorWhenSequenceSurvives(t *testing.T) {
+	addr, ph := startTCPServer(t, nil)
+
+	pushes := make(chan *Frame, 8)
+	rc := NewResilientClient(addr, func(frame *Frame) { pushes <- frame }, nil)
+	defer rc.Close()
+	if err := rc.Connect(2 * time.Second); err != nil {
+		t.Fatalf("Connect(): %v", err)
+	}
+	if err := rc.Subscribe("t", 2*time.Second); err != nil {
+		t.Fatalf("Subscribe(): %v", err)
+	}
+	other, err := Dial(addr, nil)
+	if err != nil {
+		t.Fatalf("Dial other: %v", err)
+	}
+	defer other.Close()
+	if err := other.Subscribe("t", 2*time.Second); err != nil {
+		t.Fatalf("other Subscribe(): %v", err)
+	}
+	for _, payload := range []string{"one", "two", "three"} {
+		if _, err := ph.Publish("t", payload); err != nil {
+			t.Fatalf("Publish(%s): %v", payload, err)
 		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("fresh publish dropped after session-expired reconnect — stale cursor survived")
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for len(pushes) < 3 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if len(pushes) != 3 {
+		t.Fatalf("received %d initial publishes, want 3", len(pushes))
+	}
+	rc.mu.Lock()
+	if rc.cursors["t"] != 3 {
+		rc.mu.Unlock()
+		t.Fatalf("cursor before expiry = %d, want 3", rc.cursors["t"])
+	}
+	token := rc.token
+	rc.mu.Unlock()
+
+	// Expire rc's session; the other session keeps the topic sequence alive.
+	ph.mu.RLock()
+	var s *session
+	for tok, sess := range ph.sessions {
+		if tok == token {
+			s = sess
+		}
+	}
+	ph.mu.RUnlock()
+	if s == nil {
+		t.Fatal("rc session not found on the server")
+	}
+	s.lastSeen.Store(time.Now().Add(-ph.sessionTTL - time.Second).UnixNano())
+	ph.reapExpiredSessions()
+
+	dead := killCurrent(t, rc)
+	reconnected := make(chan struct{})
+	go func() {
+		defer close(reconnected)
+		deadline := time.Now().Add(3 * time.Second)
+		for time.Now().Before(deadline) {
+			rc.mu.Lock()
+			alive := rc.client != nil && rc.client != dead
+			rc.mu.Unlock()
+			if alive {
+				return
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}()
+	select {
+	case <-reconnected:
+	case <-time.After(3 * time.Second):
+		t.Fatal("client never reconnected after its session expired")
+	}
+	rc.mu.Lock()
+	cursorAfter := rc.cursors["t"]
+	rc.mu.Unlock()
+	if cursorAfter != 3 {
+		t.Fatalf("cursor after reconnect = %d, want 3 (sequence survived, must not be cleared)", cursorAfter)
 	}
 }

@@ -259,13 +259,34 @@ func (rc *ResilientClient) Subscribe(topic string, timeout time.Duration) error 
 	if err != nil {
 		return err
 	}
-	if err := c.Subscribe(topic, timeout); err != nil {
+	sub, err := c.SubscribeWithResult(topic, timeout)
+	if err != nil {
 		return err
 	}
 	rc.mu.Lock()
 	rc.subscribed[topic] = struct{}{}
+	rc.alignReplayState(topic, sub.LastSeq)
 	rc.mu.Unlock()
 	return nil
+}
+
+// alignReplayState reconciles the per-topic replay bookkeeping with the
+// sequence the server reported at subscribe time. The caller holds mu.
+//
+// The server assigns a topic sequence monotonically while any subscriber
+// or session records the topic, and resets it once the last holder leaves.
+// The handshake's Resumed flag cannot tell the two apart, so the subscribe
+// response reports the current sequence: when it sits below the client's
+// cursor the topic was reset while the client was away, and a stale cursor
+// would silently drop the fresh publishes of the re-subscribed topic.
+// Adopting the reported floor fixes that. When the sequence survived (the
+// reported floor is at or above the cursor) the cursor and any pending
+// accepted gap are left untouched so a rejected frame still replays.
+func (rc *ResilientClient) alignReplayState(topic string, lastSeq uint64) {
+	if lastSeq < rc.cursors[topic] {
+		rc.cursors[topic] = lastSeq
+		delete(rc.acceptedPublishes, topic)
+	}
 }
 
 // Unsubscribe cancels a topic and forgets it.
@@ -428,26 +449,27 @@ func (rc *ResilientClient) swap(c *Client, res *HandshakeResult) {
 	rc.token = res.Token
 	resubscribe := !res.Resumed
 	topics := make([]string, 0, len(rc.subscribed))
-	if resubscribe {
-		// A non-resumable session can only follow a server-side expiration
-		// (or cache loss); its per-topic sequence state is gone, so stale
-		// replay bookkeeping would silently drop the fresh publishes of a
-		// re-subscribed topic.
-		rc.cursors = make(map[string]uint64)
-		rc.acceptedPublishes = make(map[string]map[uint64]struct{})
-		for topic := range rc.subscribed {
-			topics = append(topics, topic)
-		}
+	for topic := range rc.subscribed {
+		topics = append(topics, topic)
 	}
 	rc.mu.Unlock()
 	if old != nil {
 		_ = old.Close()
 	}
 	if resubscribe {
+		// The server could not restore the session: re-send the recorded
+		// subscriptions so they are live again. Each subscribe response
+		// reports the topic's current sequence, letting alignReplayState
+		// adopt a reset counter (no stale-cursor drops) or keep a survived
+		// one in step (no accepted-set growth or duplicate replay).
 		// best-effort: topics that fail stay recorded and are retried on
-		// the next reconnect
+		// the next reconnect.
 		for _, topic := range topics {
-			_ = c.Subscribe(topic, rc.opts.handshakeTimeout())
+			if sub, err := c.SubscribeWithResult(topic, rc.opts.handshakeTimeout()); err == nil {
+				rc.mu.Lock()
+				rc.alignReplayState(topic, sub.LastSeq)
+				rc.mu.Unlock()
+			}
 		}
 	}
 }

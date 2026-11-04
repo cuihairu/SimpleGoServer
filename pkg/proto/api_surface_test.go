@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"net"
 	"strings"
 	"testing"
 	"time"
@@ -435,5 +436,94 @@ func TestResilientConnectRemembersToken(t *testing.T) {
 	rc.mu.Unlock()
 	if token == "" {
 		t.Fatal("Connect discarded the handshake's session token")
+	}
+}
+
+// TestSubscribeWithResultFreshTopic pins that subscribing to a topic the
+// server has never published to reports LastSeq zero, and that a subsequent
+// publish advances the reported sequence.
+func TestSubscribeWithResultFreshTopic(t *testing.T) {
+	addr, ph := startTCPServer(t, nil)
+	client, err := Dial(addr, nil)
+	if err != nil {
+		t.Fatalf("Dial(): %v", err)
+	}
+	defer client.Close()
+
+	sub, err := client.SubscribeWithResult("fresh", 2*time.Second)
+	if err != nil {
+		t.Fatalf("SubscribeWithResult(fresh): %v", err)
+	}
+	if sub.Topic != "fresh" || sub.LastSeq != 0 {
+		t.Fatalf("fresh subscribe = %+v, want topic fresh lastSeq 0", sub)
+	}
+	if _, err := ph.Publish("fresh", "one"); err != nil {
+		t.Fatalf("Publish(): %v", err)
+	}
+	sub, err = client.SubscribeWithResult("fresh", 2*time.Second)
+	if err != nil {
+		t.Fatalf("SubscribeWithResult(fresh) again: %v", err)
+	}
+	if sub.LastSeq != 1 {
+		t.Fatalf("lastSeq after one publish = %d, want 1", sub.LastSeq)
+	}
+}
+
+// TestSubscribeWithResultMalformedResponse pins the decode-failure path of
+// SubscribeWithResult: a response whose data is not a valid SubscribeResponse
+// must surface as an error instead of a silent zero value.
+func TestSubscribeWithResultMalformedResponse(t *testing.T) {
+	peer, conn := net.Pipe()
+	client := NewClient(conn, nil)
+	defer client.Close()
+	defer peer.Close()
+
+	// A subscribe response whose data is valid JSONMessage-shaped but not
+	// a SubscribeResponse must surface as an error. The server side of the
+	// pipe must first consume the client's SUBSCRIBE frame before replying,
+	// or the pipe write blocks.
+	go func() {
+		_ = peer.SetReadDeadline(time.Now().Add(2 * time.Second))
+		_, _ = Decode(peer) // the client's SUBSCRIBE
+		wire, err := Encode(newFrame(RESPONSE, 1, []byte(`{"action":"subscribed","data":123}`)))
+		if err != nil {
+			return
+		}
+		_, _ = peer.Write(wire)
+	}()
+	if _, err := client.SubscribeWithResult("t", 2*time.Second); err == nil {
+		t.Fatal("malformed subscribe response must be an error")
+	}
+}
+
+// TestSubscribeWithResultReportsResetSequence pins the reset floor path of
+// topicSequenceLocked: once the last subscriber or session releases a topic
+// its sequence is dropped, so a later subscribe reports zero even though the
+// topic was published to before.
+func TestSubscribeWithResultReportsResetSequence(t *testing.T) {
+	addr, ph := startTCPServer(t, nil)
+	client, err := Dial(addr, nil)
+	if err != nil {
+		t.Fatalf("Dial(): %v", err)
+	}
+	defer client.Close()
+
+	if err := client.Subscribe("gone", 2*time.Second); err != nil {
+		t.Fatalf("Subscribe(): %v", err)
+	}
+	if _, err := ph.Publish("gone", "one"); err != nil {
+		t.Fatalf("Publish(): %v", err)
+	}
+	if err := client.Unsubscribe("gone", 2*time.Second); err != nil {
+		t.Fatalf("Unsubscribe(): %v", err)
+	}
+	// The last subscriber released the topic, so the server dropped its
+	// sequence; the next subscribe reports zero (the restart floor).
+	sub, err := client.SubscribeWithResult("gone", 2*time.Second)
+	if err != nil {
+		t.Fatalf("SubscribeWithResult(gone): %v", err)
+	}
+	if sub.LastSeq != 0 {
+		t.Fatalf("lastSeq after reset = %d, want 0 (topic sequence was dropped)", sub.LastSeq)
 	}
 }

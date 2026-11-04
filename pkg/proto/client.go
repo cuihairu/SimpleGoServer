@@ -104,6 +104,15 @@ type HandshakeResult struct {
 	Resumed bool
 }
 
+// SubscribeResponse is what the server reports when a topic is
+// subscribed. LastSeq is the last publish sequence already assigned to
+// the topic; zero means the topic has no sequence yet (or its replay
+// state was released and will restart at 1 on the next publish).
+type SubscribeResponse struct {
+	Topic   string `json:"topic"`
+	LastSeq uint64 `json:"lastSeq,omitempty"`
+}
+
 // Handshake negotiates the protocol version and opens a fresh session.
 func (c *Client) Handshake(timeout time.Duration) (*HandshakeResult, error) {
 	return c.HandshakeWith("", nil, timeout)
@@ -159,14 +168,28 @@ func (c *Client) Call(action string, data any, timeout time.Duration) (*Response
 
 // Subscribe registers interest in a topic and waits for the confirmation.
 func (c *Client) Subscribe(topic string, timeout time.Duration) error {
+	_, err := c.SubscribeWithResult(topic, timeout)
+	return err
+}
+
+// SubscribeWithResult subscribes and also reports the server's current
+// sequence state for the topic, so a resilient caller can align its
+// replay cursor with what the topic will actually publish next.
+func (c *Client) SubscribeWithResult(topic string, timeout time.Duration) (*SubscribeResponse, error) {
 	resp, err := c.roundTrip(SUBSCRIBE, RESPONSE, topic, nil, timeout)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if !resp.OK() {
-		return fmt.Errorf("proto: subscribe %q rejected: %s", topic, resp.Err.Error)
+		return nil, fmt.Errorf("proto: subscribe %q rejected: %s", topic, resp.Err.Error)
 	}
-	return nil
+	var sub SubscribeResponse
+	if len(resp.Data) > 0 {
+		if err := json.Unmarshal(resp.Data, &sub); err != nil {
+			return nil, fmt.Errorf("proto: malformed subscribe response: %w", err)
+		}
+	}
+	return &sub, nil
 }
 
 // Unsubscribe cancels a subscription.
