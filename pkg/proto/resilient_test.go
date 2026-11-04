@@ -466,8 +466,9 @@ func TestAcknowledgedClientDoesNotRedeliverAcceptedGapAfterReplay(t *testing.T) 
 		t.Fatal("client never reconnected")
 	}
 
+	replayDeadline := time.Now().Add(3 * time.Second)
 	for rejectedCalls.Load() < 2 {
-		if time.Now().After(deadline) {
+		if time.Now().After(replayDeadline) {
 			t.Fatal("the rejected publish was never replayed")
 		}
 		time.Sleep(5 * time.Millisecond)
@@ -548,5 +549,102 @@ func TestPublishSequenceIsPerTopic(t *testing.T) {
 	ph.mu.Unlock()
 	if seqExists {
 		t.Fatal("topic sequence state leaked after all subscriptions and sessions released it")
+	}
+}
+
+// TestAcknowledgedClientClearsReplayStateOnSessionExpiry pins that a
+// reconnect that cannot resume the session (Resumed == false, e.g. after the
+// server janitor reaped the expired session) also clears the client's
+// per-topic replay bookkeeping. The server drops the topic's publish
+// sequence when the last subscriber/session releases it, so a stale cursor
+// would silently drop the fresh publishes of the re-subscribed topic.
+func TestAcknowledgedClientClearsReplayStateOnSessionExpiry(t *testing.T) {
+	addr, ph := startTCPServer(t, nil)
+
+	received := make(chan string, 8)
+	rc := NewAcknowledgedResilientClient(addr, func(frame *Frame) bool {
+		msg, err := DecodeJSONMessage(frame)
+		if err != nil {
+			return false
+		}
+		select {
+		case received <- string(msg.Data):
+			return true
+		default:
+			return false
+		}
+	}, nil)
+	defer rc.Close()
+	if err := rc.Connect(2 * time.Second); err != nil {
+		t.Fatalf("Connect(): %v", err)
+	}
+	if err := rc.Subscribe("t", 2*time.Second); err != nil {
+		t.Fatalf("Subscribe(): %v", err)
+	}
+	for _, payload := range []string{"one", "two"} {
+		if _, err := ph.Publish("t", payload); err != nil {
+			t.Fatalf("Publish(%s): %v", payload, err)
+		}
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for len(received) < 2 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if len(received) != 2 {
+		t.Fatalf("received %d initial publishes, want 2", len(received))
+	}
+	rc.mu.Lock()
+	if rc.cursors["t"] != 2 {
+		rc.mu.Unlock()
+		t.Fatalf("cursor = %d before expiry, want 2", rc.cursors["t"])
+	}
+	rc.mu.Unlock()
+	// Drain so the final assertion observes only the fresh publish.
+	for len(received) > 0 {
+		<-received
+	}
+
+	// Age every session past the TTL and sweep, exactly as the janitor
+	// would — the session expires, the server drops the topic's sequence
+	// and replay cache. The client transport is still open, so the drop is
+	// only discovered on the next reconnect.
+	ph.mu.RLock()
+	for _, s := range ph.sessions {
+		s.lastSeen.Store(time.Now().Add(-ph.sessionTTL - time.Second).UnixNano())
+	}
+	ph.mu.RUnlock()
+	ph.reapExpiredSessions()
+
+	dead := killCurrent(t, rc)
+	reconnected := make(chan struct{})
+	go func() {
+		defer close(reconnected)
+		deadline := time.Now().Add(3 * time.Second)
+		for time.Now().Before(deadline) {
+			rc.mu.Lock()
+			alive := rc.client != nil && rc.client != dead
+			rc.mu.Unlock()
+			if alive {
+				return
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}()
+	select {
+	case <-reconnected:
+	case <-time.After(3 * time.Second):
+		t.Fatal("client never reconnected after session expiry")
+	}
+
+	if _, err := ph.Publish("t", "fresh"); err != nil {
+		t.Fatalf("Publish() after session-expired reconnect: %v", err)
+	}
+	select {
+	case got := <-received:
+		if got != `"fresh"` {
+			t.Fatalf("push after session-expired reconnect = %s, want \"fresh\"", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("fresh publish dropped after session-expired reconnect — stale cursor survived")
 	}
 }

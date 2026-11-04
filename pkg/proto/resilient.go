@@ -429,6 +429,12 @@ func (rc *ResilientClient) swap(c *Client, res *HandshakeResult) {
 	resubscribe := !res.Resumed
 	topics := make([]string, 0, len(rc.subscribed))
 	if resubscribe {
+		// A non-resumable session can only follow a server-side expiration
+		// (or cache loss); its per-topic sequence state is gone, so stale
+		// replay bookkeeping would silently drop the fresh publishes of a
+		// re-subscribed topic.
+		rc.cursors = make(map[string]uint64)
+		rc.acceptedPublishes = make(map[string]map[uint64]struct{})
 		for topic := range rc.subscribed {
 			topics = append(topics, topic)
 		}
