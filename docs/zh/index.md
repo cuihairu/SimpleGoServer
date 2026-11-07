@@ -13,6 +13,9 @@ hero:
       text: 读设计取舍
       link: /zh/design
     - theme: alt
+      text: 分层与术语
+      link: /zh/architecture
+    - theme: alt
       text: 跳到没做的事
       link: /zh/design#没做的事
 
@@ -40,6 +43,8 @@ features:
 分层跟着代码走，每层一个文件，依赖单向：
 
 ![SimpleGoServer 分层架构](/images/architecture-zh.svg)
+
+完整可运行源码集合的分层解说见[架构分层页](/zh/architecture)；概念锚点见[术语表](/zh/glossary)。
 
 ## 服务长什么样
 
@@ -72,4 +77,4 @@ curl -i 127.0.0.1:8080/kv/k                          # 200
 kill -TERM <pid>                                      # 在途请求走完，退出码 0
 ```
 
-题面原文、验收点与逐条验证命令见 [README](https://github.com/cuihairu/SimpleGoServer#readme)，实现代码在 [`http-service/`](https://github.com/cuihairu/SimpleGoServer/tree/main/http-service)。同一批面试题的 Reactor 与自定义帧协议那题另立 [JsonStream](https://github.com/cuihairu/jsonstream)；本仓在 [`cmd/`](https://github.com/cuihairu/SimpleGoServer/tree/main/cmd)、[`internal/`](https://github.com/cuihairu/SimpleGoServer/tree/main/internal)、[`pkg/`](https://github.com/cuihairu/SimpleGoServer/tree/main/pkg)、[`examples/`](https://github.com/cuihairu/SimpleGoServer/tree/main/examples) 下也保留一份可运行实现。
+题面原文、验收点与逐条验证命令见 [README](https://github.com/cuihairu/SimpleGoServer#readme)，实现代码在 [`http-service/`](https://github.com/cuihairu/SimpleGoServer/tree/main/http-service)。同一批面试题的 Reactor 与自定义帧协议那题另立 [JsonStream](https://github.com/cuihairu/jsonstream)；本仓在 [`cmd/`](https://github.com/cuihairu/SimpleGoServer/tree/main/cmd)、[`internal/`](https://github.com/cuihairu/SimpleGoServer/tree/main/internal)、[`pkg/`](https://github.com/cuihairu/SimpleGoServer/tree/main/pkg)、[`examples/`](https://github.com/cuihairu/SimpleGoServer/tree/main/examples) 下也保留一份可运行实现。[中文术语表](/zh/glossary)与[英文术语表](/glossary)同步互链。

@@ -69,3 +69,25 @@
 - [x] 审核发现：todo.md:68 宣称「本轮 commit，todo.md:67 改述为固定区间 d8cc0af5..d909ff3」，但 c8a1026..70fe9a3 仅含 70fe9a3 的纯追加（1 插入/0 删除），第 67 行在 c8a1026 与 70fe9a3 下逐字节一致、失准句「d8cc0af5..HEAD 现含 d909ff3 单提交」原样保留，所称修复未落地（todo.md:68）— 本轮 commit，todo.md:67 删除失准句「d8cc0af5..HEAD 现含 d909ff3 单提交」、仅保留固定区间 d8cc0af5..d909ff3 证据（git log/diff d8cc0af5..d909ff3 实测 1 提交/1 文件，d909ff3 仅改 todo.md；独立复核：c8a1026..70fe9a3 实测仅 70fe9a3 纯追加 1 插入/0 删除，第 67 行在 c8a1026 与 70fe9a3 下 sha256 逐字节一致，旧句确为自指失准且此前未落地）；go build ./...、go vet ./...、go test ./... -race 全绿、scripts/check-coverage.sh 14 包 100%、gosec ./... 0 告警、reactor -race -count=5 全绿。
 - [x] 审核发现：第 69 行声称 c8a1026..HEAD 仅含 70fe9a3 的纯追加，但该区间还包含本行所在的 22c85d1，因此提交范围与纯追加的描述不准确（todo.md:69）— 已改：区间固定为 c8a1026..70fe9a3（git log c8a1026..70fe9a3 实测仅 70fe9a3；固定范围不受后续 HEAD 变化影响），第 69 行「c8a1026..HEAD」两处及「第 67 行在 c8a1026 与 HEAD 下」改述为固定区间；独立复核：本行所在 22c85d1 仅改 todo.md（3 插入/2 删除）、第 67 行失准句「d8cc0af5..HEAD 现含 d909ff3 单提交」已在 22c85d1 删除，第 69 行原「c8a1026..HEAD」确为自指失准；go build ./...、go vet ./...、go test ./... -race 全绿、scripts/check-coverage.sh 14 包 100%、gosec ./... 0 告警、reactor -race -count=5 全绿。
 - [x] 审核发现：本轮 diff 未见问题（22c85d11..ec0f9e2）— 已核实：固定区间仅含 ec0f9e2（只改 todo.md，修复上条「c8a1026..HEAD 自指区间」并保留固定区间证据），git log/diff 22c85d11..ec0f9e2 实测仅 1 提交/1 文件（todo.md:70）；区间标签固定为 22c85d11..ec0f9e2（不受后续 HEAD 变化影响）；本轮 go build ./...、go vet ./...、go test ./... -race 16 包全绿、scripts/check-coverage.sh 14 包 2297/2297 语句 100%、gosec ./... 0 告警、reactor -race -count=5 全绿、pnpm build、pnpm check:links 全绿。
+
+## 源码分层分析 2026-11-07
+
+### 抽象层清单
+
+- 应用生命周期：把 CLI/YAML 输入装配成 HTTP KV、TCP Reactor 或协议 CLI 进程，并负责信号和收尾 —— `http-service/main.go:29`、`cmd/server/main.go:48`、`cmd/cli/client.go:39`。
+- 传输接入：由 `net/http` 或 Reactor 接收/读写字节并交给业务入口 —— `http-service/handler.go:14`、`pkg/reactor/reactor.go:92`。
+- 消息管线：按每连接有序 handler 传播入站/出站和异常事件 —— `internal/handler/linked_pipeline.go:90`、`internal/handler/node_context.go:103`。
+- 线协议：定义/编解码帧，维护服务端会话订阅与客户端调用/恢复状态 —— `pkg/proto/protocol.go:76`、`pkg/proto/client.go:266`、`pkg/proto/resilient.go:96`。
+- 业务语义：HTTP 校验键、JSON 和大小上限；TCP 示例只注入 action 回调 —— `http-service/service.go:41`、`cmd/server/main.go:22`。
+- 分发策略：在 Worker 组中按接口选择目标 Worker，默认按实时负载自适应 —— `pkg/reactor/worker.go:52`、`internal/balancer/adaptive.go:42`。
+- 运行时资源控制：提供异步执行/Future、payload 池、通用契约和信号工具 —— `internal/executor/async_executor.go:38`、`pkg/proto/pool.go:133`、`pkg/balancer.go:19`。
+
+### 超大文件候选
+
+- [ ] LAY-001 [P1] 拆分 pkg/proto/protocol_test.go（1145 行）—— 测试文件覆盖帧、编解码、会话、订阅、重放和缓存多个状态机，按被测语义拆文件可降低定位成本（pkg/proto/protocol_test.go:1）。
+
+### 目录/分类不合理处
+
+- [ ] `pkg/executor.go` 导出 Executor/Future 契约（pkg/executor.go:20），但唯一具体实现在 internal/executor（internal/executor/async_executor.go:38），当前没有生产模块引用；若非公共扩展 API，契约可与实现同层。
+- [ ] 公共 `pkg/reactor` 构造函数接收并使用 internal/handler 的具体管线（pkg/reactor/reactor.go:42、internal/handler/linked_pipeline.go:90），访问边界跨 public/private；应选择公开窄接口或把具体实现上移。
+- [ ] `cmd/server/main.go` 混合 Viper/flag 装配和协议示例 action（cmd/server/main.go:22、cmd/server/main.go:48）；示例继续增长时应把应用装配与 demo 业务分离。

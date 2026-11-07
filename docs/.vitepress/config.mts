@@ -14,6 +14,8 @@ const enTheme = {
   logo: "/logo.svg",
   nav: [
     { text: "Design", link: "/design" },
+    { text: "Architecture", link: "/architecture" },
+    { text: "Glossary", link: "/glossary" },
     { text: "Code", link: "https://github.com/cuihairu/SimpleGoServer/tree/main/http-service" },
   ],
   sidebar: {
@@ -22,6 +24,8 @@ const enTheme = {
         text: "http-service",
         items: [
           { text: "Design trade-offs", link: "/design" },
+          { text: "Architecture and layers", link: "/architecture" },
+          { text: "Glossary", link: "/glossary" },
           { text: "Service boundary", link: "/design#service-boundary" },
           { text: "Layers and dependencies", link: "/design#layers-and-dependency-direction" },
           {
@@ -60,6 +64,8 @@ const zhTheme = {
   siteTitle: "SimpleGoServer",
   nav: [
     { text: "设计取舍", link: "/zh/design" },
+    { text: "架构分层", link: "/zh/architecture" },
+    { text: "术语表", link: "/zh/glossary" },
     { text: "代码", link: "https://github.com/cuihairu/SimpleGoServer/tree/main/http-service" },
   ],
   sidebar: {
@@ -68,6 +74,8 @@ const zhTheme = {
         text: "http-service",
         items: [
           { text: "设计取舍", link: "/zh/design" },
+          { text: "架构分层", link: "/zh/architecture" },
+          { text: "术语表", link: "/zh/glossary" },
           { text: "服务边界", link: "/zh/design#服务边界" },
           { text: "分层与依赖方向", link: "/zh/design#分层与依赖方向" },
           {

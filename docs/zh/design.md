@@ -253,3 +253,5 @@ curl -i 127.0.0.1:8080/healthz                       # 200
 ## 题一去哪了
 
 同一批面试题里的另一道（主从 Reactor + 自定义 TCP 帧协议）已经独立成库：[JsonStream](https://github.com/cuihairu/jsonstream)，它的[架构与取舍文档](https://github.com/cuihairu/jsonstream/blob/main/docs/DESIGN.md)里有那题的设计决策。本仓剩下的实现代码仍可运行，但文档站只讲这一道题。
+
+当前仓库级分层模型、实现/配置/协议/文案落位、拆分理由，以及带源码锚点的抽象术语，见[架构分层](/zh/architecture)与[术语表](/zh/glossary)。英文对应页是 [Architecture and layers](/architecture) 和 [Glossary](/glossary)。

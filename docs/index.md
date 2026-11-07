@@ -13,6 +13,9 @@ hero:
       text: Read the trade-offs
       link: /design
     - theme: alt
+      text: Layers and glossary
+      link: /architecture
+    - theme: alt
       text: Jump to what is missing
       link: /design#what-is-not-here
 
@@ -40,6 +43,8 @@ features:
 The layers follow the code, one file each, dependencies pointing one way:
 
 ![SimpleGoServer layered architecture](/images/architecture-en.svg)
+
+For the full runnable source set, see the [architecture and layers page](/architecture); its concepts are anchored in the [glossary](/glossary).
 
 ## What the service looks like
 
@@ -72,4 +77,4 @@ curl -i 127.0.0.1:8080/kv/k                          # 200
 kill -TERM <pid>                                      # in-flight requests finish, exit code 0
 ```
 
-The original prompt, acceptance points, and per-item verification commands are in the [README](https://github.com/cuihairu/SimpleGoServer#readme). The implementation lives in [`http-service/`](https://github.com/cuihairu/SimpleGoServer/tree/main/http-service). The Reactor and custom framing exercise from the same interview set is its own repository, [JsonStream](https://github.com/cuihairu/jsonstream); this repository also keeps a runnable implementation under [`cmd/`](https://github.com/cuihairu/SimpleGoServer/tree/main/cmd), [`internal/`](https://github.com/cuihairu/SimpleGoServer/tree/main/internal), [`pkg/`](https://github.com/cuihairu/SimpleGoServer/tree/main/pkg) and [`examples/`](https://github.com/cuihairu/SimpleGoServer/tree/main/examples).
+The original prompt, acceptance points, and per-item verification commands are in the [README](https://github.com/cuihairu/SimpleGoServer#readme). The implementation lives in [`http-service/`](https://github.com/cuihairu/SimpleGoServer/tree/main/http-service). The Reactor and custom framing exercise from the same interview set is its own repository, [JsonStream](https://github.com/cuihairu/jsonstream); this repository also keeps a runnable implementation under [`cmd/`](https://github.com/cuihairu/SimpleGoServer/tree/main/cmd), [`internal/`](https://github.com/cuihairu/SimpleGoServer/tree/main/internal), [`pkg/`](https://github.com/cuihairu/SimpleGoServer/tree/main/pkg) and [`examples/`](https://github.com/cuihairu/SimpleGoServer/tree/main/examples). The [English glossary](/glossary) pairs with the [Chinese glossary](/zh/glossary).

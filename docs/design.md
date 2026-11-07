@@ -251,3 +251,5 @@ To watch graceful shutdown, send requests from another terminal and `kill -TERM`
 ## Where did the first exercise go?
 
 The other exercise from the same interview set (a master/worker Reactor plus a custom TCP framing protocol) is its own repository: [JsonStream](https://github.com/cuihairu/jsonstream). Its [architecture and trade-off document](https://github.com/cuihairu/jsonstream/blob/main/docs/DESIGN.md) records those decisions. The remaining implementation in this repository still runs, but this documentation site covers only the KV exercise.
+
+For the current repository-wide layer model, implementation/configuration/protocol/copy locations, split rationale, and abstract terms with source anchors, see [Architecture and layers](/architecture) and the [Glossary](/glossary). The Chinese counterparts are [架构分层](/zh/architecture) and [术语表](/zh/glossary).
