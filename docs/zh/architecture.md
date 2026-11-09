@@ -56,6 +56,6 @@ TCP 协议没有独立文案包：操作说明在 CLI flag 中，HTTP API 文案
 
 ## 目录/分类不合理处
 
-- `pkg/balancer.go`、`pkg/executor.go` 是泛型契约文件，而唯一具体实现在 `internal/balancer` 和 `internal/executor`。接口已导出（`pkg/balancer.go:19`、`pkg/executor.go:20`），但没有生产调用方消费 executor 实现；其具体代码在 internal（`internal/executor/async_executor.go:38`）。若不是刻意作为公共扩展 API，契约可与实现包同层。
+- `pkg/balancer.go` 是泛型契约文件，唯一具体实现在 `internal/balancer`；`Balancer` 接口在 `pkg/balancer.go:19` 导出并被 reactor worker 消费（`pkg/reactor/worker.go:91`），故保持公共。executor 契约（`Executor`/`Future`/`Action`/`ActionWithReturn`）没有生产调用方——唯一公共消费方 `handler.ExecutorHandler` 是零实现、仅断言不调度的休眠接口，已删除——故契约现与实现同层：`internal/executor/contract.go:20`，具体代码在 `internal/executor/async_executor.go:38`。
 - `internal/handler/head_handler.go` 在 `internal/handler/head_handler.go:6` 导入并实现 `pkg/handler` 接口，而 `pkg/reactor` 也导入 internal pipeline。公共 Reactor API 因此依赖私有实现包；把具体 pipeline 移到 `pkg/handler`，或暴露更窄的注入契约，可对齐访问边界。
 - `cmd/server/main.go` 同时包含进程配置装配和协议示例 action（`cmd/server/main.go:22`）；`cmd/cli/client.go` 也混合解析、执行和 watch 交互。当前规模尚小，但示例继续增长时，应用/示例处理器文件可把配置和演示行为分开。

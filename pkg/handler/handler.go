@@ -1,9 +1,5 @@
 package handler
 
-import (
-	"github.com/cuihairu/simplegoserver/pkg"
-)
-
 type (
 	Handler interface {
 	}
@@ -30,9 +26,6 @@ type (
 	// InactiveHandler defines an inactive handler
 	InactiveHandler interface {
 		HandleInactive(ctx InactiveContext, ex Exception)
-	}
-	ExecutorHandler interface {
-		Executor() pkg.Executor[any]
 	}
 )
 
@@ -75,7 +68,6 @@ func IsValidHandlers(handlers ...Handler) bool {
 		case InboundHandler:
 		case OutboundHandler:
 		case InactiveHandler:
-		case ExecutorHandler:
 		case ExceptionHandler:
 		default:
 			return false

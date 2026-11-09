@@ -3,7 +3,6 @@ package executor
 import (
 	"context"
 	"fmt"
-	"github.com/cuihairu/simplegoserver/pkg"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -20,7 +19,7 @@ type AsyncFuture[T any] struct {
 	doneCh  chan struct{}
 }
 
-func NewFuture[T any](ctx context.Context, f pkg.ActionWithReturn[T]) *AsyncFuture[T] {
+func NewFuture[T any](ctx context.Context, f ActionWithReturn[T]) *AsyncFuture[T] {
 	cancelCtx, cancel := context.WithCancel(ctx) // #nosec G118 -- cancel is stored and invoked via cancelWithErr (Do failure, Cancel, rejected Submit)
 	return &AsyncFuture[T]{
 		ctx:    cancelCtx,

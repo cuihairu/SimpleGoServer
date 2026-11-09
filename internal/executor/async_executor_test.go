@@ -3,14 +3,13 @@ package executor
 import (
 	"context"
 	"fmt"
-	"github.com/cuihairu/simplegoserver/pkg"
 	"sync"
 	"testing"
 	"time"
 )
 
 func TestNewAsyncExecutor(t *testing.T) {
-	var executor pkg.Executor[int] = NewAsyncExecutor[int](2)
+	var executor Executor[int] = NewAsyncExecutor[int](2)
 	future := executor.Submit(func(cxt context.Context) (int, error) {
 		fmt.Printf("start: %+v\n", time.Now())
 		time.Sleep(2 * time.Second)

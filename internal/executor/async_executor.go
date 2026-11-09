@@ -2,21 +2,20 @@ package executor
 
 import (
 	"context"
-	"github.com/cuihairu/simplegoserver/pkg"
 	"runtime"
 	"sync"
 )
 
 type AsyncExecutor[T any] struct {
-	tasks     chan pkg.Action
-	futureCh  chan pkg.Future[T]
+	tasks     chan Action
+	futureCh  chan Future[T]
 	numWorker int
 	wg        sync.WaitGroup
 	ctx       context.Context
 	cancel    context.CancelFunc
 }
 
-func (e *AsyncExecutor[T]) Submit(action pkg.ActionWithReturn[T]) pkg.Future[T] {
+func (e *AsyncExecutor[T]) Submit(action ActionWithReturn[T]) Future[T] {
 	future := NewFuture[T](e.ctx, action)
 	select {
 	case e.futureCh <- future:
@@ -41,8 +40,8 @@ func NewAsyncExecutor[T any](numWorker int) *AsyncExecutor[T] {
 	}
 	ctx, cancel := context.WithCancel(context.Background()) // #nosec G118 -- cancel is stored and invoked in Stop; static analysis cannot follow struct-held cancels
 	executor := &AsyncExecutor[T]{
-		tasks:     make(chan pkg.Action),
-		futureCh:  make(chan pkg.Future[T]),
+		tasks:     make(chan Action),
+		futureCh:  make(chan Future[T]),
 		numWorker: numWorker,
 		ctx:       ctx,
 		cancel:    cancel,
@@ -68,7 +67,7 @@ func (e *AsyncExecutor[T]) Stop() {
 	e.cancel()
 }
 
-func (e *AsyncExecutor[T]) Execute(task pkg.Action) {
+func (e *AsyncExecutor[T]) Execute(task Action) {
 	select {
 	case e.tasks <- task:
 		select {

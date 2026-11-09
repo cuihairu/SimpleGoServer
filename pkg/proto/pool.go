@@ -9,8 +9,7 @@ import "sync"
 // release points below sound:
 //
 //   - Inbound (server): the pipeline propagates events as plain synchronous
-//     method calls (internal/handler walks a linked list; the ExecutorHandler
-//     interface is asserted but never dispatched), so when FrameCodec's
+//     method calls (internal/handler walks a linked list), so when FrameCodec's
 //     ctx.HandleRead(frame) returns, every downstream consumer — dispatch,
 //     the business handler, the response marshal, the outbound encode — has
 //     already finished. Nothing retains the payload past that point

@@ -4,8 +4,6 @@ import (
 	"context"
 	"testing"
 	"time"
-
-	"github.com/cuihairu/simplegoserver/pkg"
 )
 
 // stoppedExecutor builds an executor with a cancelled context, buffered
@@ -15,8 +13,8 @@ func stoppedExecutor[T any](buffer int) *AsyncExecutor[T] {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	return &AsyncExecutor[T]{
-		tasks:     make(chan pkg.Action, buffer),
-		futureCh:  make(chan pkg.Future[T], buffer),
+		tasks:     make(chan Action, buffer),
+		futureCh:  make(chan Future[T], buffer),
 		numWorker: 1,
 		ctx:       ctx,
 		cancel:    cancel,
@@ -71,7 +69,7 @@ func TestWorkerIgnoresNilHandoffs(t *testing.T) {
 	e := NewAsyncExecutor[int](1)
 
 	e.Execute(nil)
-	go func() { e.futureCh <- pkg.Future[int](nil) }()
+	go func() { e.futureCh <- Future[int](nil) }()
 
 	// give the worker a moment to chew through both nils, then shut down
 	time.Sleep(50 * time.Millisecond)

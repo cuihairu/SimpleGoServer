@@ -17,7 +17,6 @@ type NodeContext struct {
 	outboundHandler  handler.OutboundHandler
 	exceptionHandler handler.ExceptionHandler
 	inactiveHandler  handler.InactiveHandler
-	executorHandler  handler.ExecutorHandler
 
 	// per-connection attachment (e.g. a codec's partial-frame buffer);
 	// handlers may set it from pipeline callbacks on different goroutines,
@@ -40,7 +39,6 @@ func NewNodeContext(pipeline handler.Pipeline, h handler.Handler, prev *NodeCont
 	n.outboundHandler, _ = h.(handler.OutboundHandler)
 	n.exceptionHandler, _ = h.(handler.ExceptionHandler)
 	n.inactiveHandler, _ = h.(handler.InactiveHandler)
-	n.executorHandler, _ = h.(handler.ExecutorHandler)
 	return n
 }
 
