@@ -13,7 +13,7 @@ title: 术语表
 | HTTP 键值服务 | HTTP KV service | 独立的标准库 HTTP 进程，提供 put/get/delete 和健康路由。 | `http-service/main.go:29`, `http-service/handler.go:14`, `http-service/service.go:53` |
 | TCP Reactor 服务 | TCP Reactor server | 独立示例进程，接受 TCP 连接、分发给 Worker 并提供自定义帧协议。 | `cmd/server/main.go:48`, `pkg/reactor/reactor.go:42`, `pkg/reactor/reactor.go:92` |
 | 传输接入 | Transport access | `net/http` 或 Reactor 拥有的 accept/read/write 入口；不判断领域有效性。 | `http-service/handler.go:14`, `pkg/reactor/reactor.go:105`, `pkg/reactor/worker.go:206` |
-| Worker 组 | Worker group | 管理 Worker 注册、连接注册表访问，并经 channel 分发到选中的 Worker。 | `pkg/reactor/worker.go:40`, `pkg/reactor/worker.go:52`, `pkg/reactor/worker.go:151` |
+| Worker 组 | Worker group | 管理 Worker 注册、连接注册表访问，并经 channel 分发到选中的 Worker。 | `pkg/reactor/worker.go:40`, `pkg/reactor/worker.go:52`, `pkg/reactor/worker.go:91` |
 | Worker | Worker | 一个拥有连接队列和活动连接数的事件循环；其 goroutine 驱动连接 pipeline。 | `pkg/reactor/worker.go:18`, `pkg/reactor/worker.go:179`, `pkg/reactor/worker.go:206` |
 | 连接注册表 | Connection registry | 跟踪打开连接，并把注册与关闭清扫的竞态串行化，确保 handler 不躲过清理。 | `pkg/reactor/registry.go:12`, `pkg/reactor/registry.go:33`, `pkg/reactor/registry.go:62` |
 | 消息管线 | Message pipeline | 每连接的有序 handler 链，向内传播 active/read/exception/inactive，向外传播 write。 | `pkg/handler/handler.go:52`, `internal/handler/linked_pipeline.go:90`, `internal/handler/node_context.go:103` |
@@ -23,7 +23,7 @@ title: 术语表
 | 协议会话 | Protocol session | 一个逻辑客户端的服务端记忆：当前连接、主题和 last-seen；可超越传输连接存活。 | `pkg/proto/protocol.go:148`, `pkg/proto/protocol.go:345`, `pkg/proto/protocol.go:406` |
 | 主题重放缓存 | Topic replay cache | 按主题和总字节有界的已编码发布记忆，用于恢复会话补齐消息。 | `pkg/proto/protocol.go:124`, `pkg/proto/protocol.go:133`, `pkg/proto/protocol.go:460` |
 | 协议客户端 | Protocol client | 客户端拥有一个 TCP 连接、pending 请求 channel、流分片、保活和关闭。 | `pkg/proto/client.go:81`, `pkg/proto/client.go:266`, `pkg/proto/client.go:225` |
-| 可恢复客户端 | Resilient client | 包装协议客户端，断连后恢复令牌/订阅并同步重放游标。 | `pkg/proto/resilient.go:96`, `pkg/proto/resilient.go:367`, `pkg/proto/resilient.go:385` |
+| 可恢复客户端 | Resilient client | 包装协议客户端，断连后恢复令牌/订阅并同步重放游标。 | `pkg/proto/resilient.go:56`, `pkg/proto/resilient.go:367`, `pkg/proto/resilient.go:385` |
 | 业务规则 | Business rules | HTTP 专属有效性和结果规则：键语法、单个 JSON 值、大小上限和 sentinel error。 | `http-service/service.go:41`, `http-service/service.go:53`, `http-service/service.go:68` |
 | 存储缝 | Store seam | HTTP Service 背后的存储接口；生产实现只有进程内 map。 | `http-service/store.go:19`, `http-service/store.go:29`, `http-service/store.go:38` |
 | 均衡器 | Balancer | 已注册后端的通用选择策略；Reactor 默认按实时负载自适应选择。 | `pkg/balancer.go:19`, `pkg/reactor/worker.go:52`, `internal/balancer/adaptive.go:42` |
