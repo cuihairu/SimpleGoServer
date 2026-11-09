@@ -1,53 +1,20 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
-	"sync"
 	"time"
 
-	"github.com/cuihairu/simplegoserver/pkg/handler"
-	"github.com/cuihairu/simplegoserver/pkg/proto"
+	"github.com/cuihairu/simplegoserver/cmd/server/demo"
 	"github.com/cuihairu/simplegoserver/pkg/reactor"
 	"github.com/cuihairu/simplegoserver/pkg/utils"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )
 
-// One shared protocol handler for every connection: the subscription table
-// must be process-wide, or clients subscribed to the same topic on
-// different connections would never see each other's publishes.
-var demoProtocolClose sync.Once
-var demoProtocol = proto.NewProtocolHandler(func(action string, data []byte) (any, error) {
-	return map[string]any{"action": action, "data": json.RawMessage(data)}, nil
-})
-
-// echoInitializer wires the frame codec and the shared protocol handler
-// into every accepted connection.
-func echoInitializer(p handler.Pipeline) error {
-	_ = p.AddLast(
-		proto.NewFrameCodec(),
-		demoProtocol,
-	)
-	return nil
-}
-
-var (
-	cfgFile     string
-	host        string
-	port        int
-	network     string
-	multicore   bool
-	numWorkers  int
-	lockThread  bool
-	idleTime    time.Duration
-	strictHello bool
-)
-
 func runServer() {
-	defer demoProtocolClose.Do(demoProtocol.Close)
-	demoProtocol.RequireHello(viper.GetBool("server.strictHello"))
+	defer demo.Close()
+	demo.RequireHello(viper.GetBool("server.strictHello"))
 	addr := fmt.Sprintf("%s://%s:%d", viper.GetString("server.network"), viper.GetString("server.host"), viper.GetInt("server.port"))
 	options := &reactor.ServerOptions{
 		Multicore:   viper.GetBool("server.multicore"),
@@ -56,7 +23,7 @@ func runServer() {
 		LockThread:  viper.GetBool("server.lockThread"),
 		IdleTimeout: viper.GetDuration("server.idleTimeout"),
 	}
-	newReactor, err := reactor.NewReactor(options, nil, nil, echoInitializer, nil)
+	newReactor, err := reactor.NewReactor(options, nil, nil, demo.Initializer, nil)
 	if err != nil {
 		panic(err)
 	}
@@ -101,6 +68,18 @@ func initConfig() {
 // osExit is a variable so tests can run main() without terminating the
 // test binary.
 var osExit = os.Exit
+
+var (
+	cfgFile     string
+	host        string
+	port        int
+	network     string
+	multicore   bool
+	numWorkers  int
+	lockThread  bool
+	idleTime    time.Duration
+	strictHello bool
+)
 
 // Flags are registered and bound exactly once per process (init), so main
 // stays a thin, repeatable shell that tests can drive more than once.

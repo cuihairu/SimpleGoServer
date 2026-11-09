@@ -9,9 +9,9 @@ title: 术语表
 
 | 术语 | 英文 | 定义 | 证据 |
 | --- | --- | --- | --- |
-| 应用生命周期 | Application lifecycle | 把 CLI/YAML 输入装配成可运行进程，并负责启动、信号处理和关闭。 | `http-service/main.go:29`, `cmd/server/main.go:48`, `cmd/cli/client.go:39` |
+| 应用生命周期 | Application lifecycle | 把 CLI/YAML 输入装配成可运行进程，并负责启动、信号处理和关闭。 | `http-service/main.go:29`, `cmd/server/main.go:15`, `cmd/cli/client.go:39` |
 | HTTP 键值服务 | HTTP KV service | 独立的标准库 HTTP 进程，提供 put/get/delete 和健康路由。 | `http-service/main.go:29`, `http-service/handler.go:14`, `http-service/service.go:53` |
-| TCP Reactor 服务 | TCP Reactor server | 独立示例进程，接受 TCP 连接、分发给 Worker 并提供自定义帧协议。 | `cmd/server/main.go:48`, `pkg/reactor/reactor.go:42`, `pkg/reactor/reactor.go:92` |
+| TCP Reactor 服务 | TCP Reactor server | 独立示例进程，接受 TCP 连接、分发给 Worker 并提供自定义帧协议。 | `cmd/server/main.go:15`, `pkg/reactor/reactor.go:42`, `pkg/reactor/reactor.go:92` |
 | 传输接入 | Transport access | `net/http` 或 Reactor 拥有的 accept/read/write 入口；不判断领域有效性。 | `http-service/handler.go:14`, `pkg/reactor/reactor.go:105`, `pkg/reactor/worker.go:206` |
 | Worker 组 | Worker group | 管理 Worker 注册、连接注册表访问，并经 channel 分发到选中的 Worker。 | `pkg/reactor/worker.go:40`, `pkg/reactor/worker.go:52`, `pkg/reactor/worker.go:91` |
 | Worker | Worker | 一个拥有连接队列和活动连接数的事件循环；其 goroutine 驱动连接 pipeline。 | `pkg/reactor/worker.go:18`, `pkg/reactor/worker.go:179`, `pkg/reactor/worker.go:206` |
@@ -34,4 +34,4 @@ title: 术语表
 | 优雅关闭 | Graceful shutdown | 进程专属清理：HTTP 限时排空；Reactor 关监听、连接排空、强关和停止 Worker。 | `http-service/main.go:72`, `pkg/reactor/reactor.go:156`, `pkg/reactor/reactor.go:177` |
 | 信号监听 | Signal listener | OS 信号桥；TCP 使用共享 Graceful，HTTP 使用 `signal.NotifyContext`。 | `pkg/utils/graceful.go:22`, `pkg/utils/graceful.go:45`, `http-service/main.go:55` |
 | 事件监听器 | Event listener | Reactor 的生命周期/错误/连接观察者；默认日志，构造时注入。 | `pkg/event/listener.go:5`, `pkg/reactor/reactor.go:42`, `internal/handler/event_listener.go:17` |
-| 配置绑定 | Configuration binding | YAML/flag/环境变量到运行行为的映射；HTTP 直接使用 flag。 | `config.example.yml:4`, `cmd/server/main.go:107`, `http-service/main.go:30` |
+| 配置绑定 | Configuration binding | YAML/flag/环境变量到运行行为的映射；HTTP 直接使用 flag。 | `config.example.yml:4`, `cmd/server/main.go:86`, `http-service/main.go:30` |

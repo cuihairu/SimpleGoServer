@@ -9,9 +9,9 @@ This glossary uses the abstract layers defined in [Architecture and layers](/arc
 
 | Term | English | Definition | Evidence |
 | --- | --- | --- | --- |
-| 应用生命周期 | Application lifecycle | Turns CLI/YAML input into a runnable process and owns its startup, signal handling and shutdown. | `http-service/main.go:29`, `cmd/server/main.go:48`, `cmd/cli/client.go:39` |
+| 应用生命周期 | Application lifecycle | Turns CLI/YAML input into a runnable process and owns its startup, signal handling and shutdown. | `http-service/main.go:29`, `cmd/server/main.go:15`, `cmd/cli/client.go:39` |
 | HTTP 键值服务 | HTTP KV service | The standalone standard-library HTTP process exposing put/get/delete and health routes. | `http-service/main.go:29`, `http-service/handler.go:14`, `http-service/service.go:53` |
-| TCP Reactor 服务 | TCP Reactor server | The standalone demo process that accepts TCP connections, distributes them to workers and serves the custom frame protocol. | `cmd/server/main.go:48`, `pkg/reactor/reactor.go:42`, `pkg/reactor/reactor.go:92` |
+| TCP Reactor 服务 | TCP Reactor server | The standalone demo process that accepts TCP connections, distributes them to workers and serves the custom frame protocol. | `cmd/server/main.go:15`, `pkg/reactor/reactor.go:42`, `pkg/reactor/reactor.go:92` |
 | 传输接入 | Transport access | The accept/read/write entry owned by either `net/http` or the Reactor; it does not decide domain validity. | `http-service/handler.go:14`, `pkg/reactor/reactor.go:105`, `pkg/reactor/worker.go:206` |
 | Worker 组 | Worker group | Owns worker registration, connection registry access and channel-based dispatch to the selected worker. | `pkg/reactor/worker.go:40`, `pkg/reactor/worker.go:52`, `pkg/reactor/worker.go:91` |
 | Worker | Worker | One event loop owning its connection queue and active-connection count; its goroutines drive connection pipelines. | `pkg/reactor/worker.go:18`, `pkg/reactor/worker.go:179`, `pkg/reactor/worker.go:206` |
@@ -34,4 +34,4 @@ This glossary uses the abstract layers defined in [Architecture and layers](/arc
 | 优雅关闭 | Graceful shutdown | Process-specific cleanup: HTTP deadline drain; Reactor listener close, connection drain, force close and worker stop. | `http-service/main.go:72`, `pkg/reactor/reactor.go:156`, `pkg/reactor/reactor.go:177` |
 | 信号监听 | Signal listener | OS signal bridge; TCP uses the shared Graceful listener while HTTP uses `signal.NotifyContext`. | `pkg/utils/graceful.go:22`, `pkg/utils/graceful.go:45`, `http-service/main.go:55` |
 | 事件监听器 | Event listener | Lifecycle/error/connect observer for Reactor; defaults to logging and is injected at construction. | `pkg/event/listener.go:5`, `pkg/reactor/reactor.go:42`, `internal/handler/event_listener.go:17` |
-| 配置绑定 | Configuration binding | Runtime input map from YAML/flags/environment to server behavior; HTTP uses flags directly. | `config.example.yml:4`, `cmd/server/main.go:107`, `http-service/main.go:30` |
+| 配置绑定 | Configuration binding | Runtime input map from YAML/flags/environment to server behavior; HTTP uses flags directly. | `config.example.yml:4`, `cmd/server/main.go:86`, `http-service/main.go:30` |
