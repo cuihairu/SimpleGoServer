@@ -85,7 +85,7 @@
 
 ### 超大文件候选
 
-- [ ] LAY-001 [P1] 拆分 pkg/proto/protocol_test.go（1145 行）—— 测试文件覆盖帧、编解码、会话、订阅、重放和缓存多个状态机，按被测语义拆文件可降低定位成本（pkg/proto/protocol_test.go:1）。
+- [x] LAY-001 [P1] 拆分 pkg/proto/protocol_test.go（1145 行）—— 测试文件覆盖帧、编解码、会话、订阅、重放和缓存多个状态机，按被测语义拆文件可降低定位成本（pkg/proto/protocol_test.go:1）— 本轮 commit，拆为 7 个文件（protocol_helpers_test.go 共享辅助 + protocol_handler_test.go 请求/错误/ping/关闭 + protocol_pubsub_test.go 订阅/发布 + client_call_test.go 客户端调用生命周期 + protocol_session_test.go HELLO/会话/恢复/TTL/复活 + protocol_replay_test.go 重放 + protocol_topic_cache_test.go 缓存/驱逐/预算），行多重集逐一比对与拆分前逐行一致（无内容丢失/重复，仅每文件新增 import 头），145 个测试 -v 逐名一致全 PASS；go build ./...、go vet ./...、go test ./... -race 全绿、scripts/check-coverage.sh 14 包 2297/2297 语句 100%、gosec ./... 0 告警、reactor -race -count=5 全绿、pkg/proto -race 全绿。
 
 ### 目录/分类不合理处
 
