@@ -93,3 +93,13 @@
 - [ ] 公共 `pkg/reactor` 构造函数接收并使用 internal/handler 的具体管线（pkg/reactor/reactor.go:42、internal/handler/linked_pipeline.go:90），访问边界跨 public/private；应选择公开窄接口或把具体实现上移。— BLOCKED（本轮巡检）：缺用户方向——「公开窄接口」或「具体实现上移」二者选一；本巡检单（nov10b）仅给出 executor 归并方向，未给此条方向，避免拍脑袋实现后返工，待用户拍板。
 - [x] `cmd/server/main.go` 混合 Viper/flag 装配和协议示例 action（cmd/server/main.go:22、cmd/server/main.go:48）；示例继续增长时应把应用装配与 demo 业务分离。— 已解决（本轮 commit）：demo 业务拆至独立包 cmd/server/demo/demo.go（echoAction :27、Initializer :33、RequireHello :42、Close :47），main.go 只留装配（runServer :15、init :86、bindFlags :104）；demo 包零 cobra/viper 依赖，装配经 demo.Initializer/RequireHello/Close 调用，单二进制保持（go run ./cmd/server 不变）；docs architecture/glossary en/zh 锚点同步至新位置；门禁 go build/vet/test -race 全绿（17 包，cmd/server 与 demo 均 100% 覆盖）、check-coverage.sh 15 包 2297/2297 语句 100%、gosec 0 告警、reactor -race -count=5 全绿。
 - [x] 审核发现：记录称 ec0f9e22..HEAD 仅包含 e3dd2e1 和 8661acb，但该范围还包含记录自身所在的 bcbc75b 及后续提交，范围描述不准确（todo.md:72）— 属实：已改 todo.md:72 范围固定为 ec0f9e22..8661acb（git log ec0f9e22..8661acb 实测仅 e3dd2e1 + 8661acb 两提交，与记录所述一致；ec0f9e22..HEAD 现含 bcbc75b、49e54d0 两后续提交，确为自指失准；固定范围不受后续 HEAD 变化影响），并顺带修正「文档 10 文件」→「文档 9 文件 + todo.md 22 行」；本轮 commit。
+
+## 覆盖率巡检 2026-11-11（覆盖率推进第二轮）
+
+测量点 cc3f241（工作区干净，coverage.out 经 .gitignore `*.out` 忽略不入库）。
+
+- 前测：`go test ./... -count=1` 17 包全绿；`go test ./... -coverprofile=coverage.out` + `go tool cover -func` total 100.0%；`scripts/check-coverage.sh --profile coverage.out` PASS —— 15 个含语句包共 2297/2297 语句，每包均 100.00%（cmd/cli 98、cmd/server 48、cmd/server/demo 5、examples/concurrent-client 91、examples/echo-server 68、http-service 125、internal/balancer 314、internal/executor 83、internal/handler 165、pkg 6、pkg/channels 13、pkg/handler 6、pkg/proto 999、pkg/reactor 255、pkg/utils 21）。
+- cover -func 唯一低于 100% 项：pkg/reactor/worker.go:38 `SetCount` 0.0% —— 空函数体 0 语句（cover 块 `38.33,38.33 0 1`，NumStmt=0），coverage_edge_test.go:134 `TestWorkerSetCountIsNoOp` 已实际调用它，属 0/0 显示伪差，非真实缺口。
+- `[no statements]` 两包均合法：pkg/event 纯接口声明（event_test.go 以编译期断言钉住方法集），scripts 仅含 _test.go；门禁按设计跳过无语句包（check-coverage.sh 头注释第 19-21 行）。
+- 补测试判定：语句覆盖已在每包 100% 天花板——仓库自有门禁默认阈值即 100.0 且按包强制，任何新增测试都无法提升覆盖数字，按巡检单「禁凑数」约束不补测试；98% 目标已超越，如实记录上限=100%（已达，且门禁防回归）。
+- 后测：无生产/测试代码改动，与前测逐项一致 —— 15 包 2297/2297 语句 100.00%、check-coverage.sh PASS、`go vet ./...` 0 错。
