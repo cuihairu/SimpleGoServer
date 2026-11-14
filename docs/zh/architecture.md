@@ -5,7 +5,7 @@ title: 架构分层
 
 # 架构分层
 
-本分析对应 HEAD `e3dd2e1`。仓库有两个可运行进程形态：HTTP 键值服务是一个二进制（`go run ./http-service`）；TCP Reactor 示例是另一个（`go run ./cmd/server`），配套协议客户端（`go run ./cmd/cli`）。二者互不调用，依赖方向指向接口缝。
+本分析对应 HEAD `e3dd2e1`——已在 `cc3f241` 复审（审计 -G2，2026-11-14）：下文每个锚点仍可定位，`e3dd2e1` 之后的 demo/executor 变动已在本轮重新定位锚点。仓库有两个可运行进程形态：HTTP 键值服务是一个二进制（`go run ./http-service`）；TCP Reactor 示例是另一个（`go run ./cmd/server`），配套协议客户端（`go run ./cmd/cli`）。二者互不调用，依赖方向指向接口缝。
 
 逐条术语定义和源码锚点见[术语表](/zh/glossary)。该页也有反向链接。
 

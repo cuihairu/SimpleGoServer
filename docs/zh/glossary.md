@@ -30,7 +30,7 @@ title: 术语表
 | 自适应均衡器 | Adaptive balancer | 选择负载最低 Worker，每个负载值只读一次，并在同分间随机分流量。 | `internal/balancer/adaptive.go:26`, `internal/balancer/adaptive.go:42`, `pkg/reactor/worker.go:263` |
 | 异步执行器 | Async executor | 固定 worker 池通过无缓冲 channel 路由 action 和返回 Future，用 context 停止。 | `internal/executor/contract.go:20`, `internal/executor/async_executor.go:38`, `internal/executor/async_executor.go:85` |
 | 异步 Future | Async future | 一次性任务结果，带完成/取消视图和超时拒绝；取消不覆盖已完成结果。 | `internal/executor/async_future.go:12`, `internal/executor/async_future.go:33`, `internal/executor/async_future.go:75` |
-| Payload 池 | Payload pool | 按大小分级的 frame/payload 回收，明确所有权、清零和幂等 release。 | `pkg/proto/pool.go:10`, `pkg/proto/pool.go:104`, `pkg/proto/pool.go:133` |
+| Payload 池 | Payload pool | 按大小分级的 frame/payload 回收，明确所有权、清零和幂等 release。 | `pkg/proto/pool.go:10`, `pkg/proto/pool.go:95`, `pkg/proto/pool.go:133` |
 | 优雅关闭 | Graceful shutdown | 进程专属清理：HTTP 限时排空；Reactor 关监听、连接排空、强关和停止 Worker。 | `http-service/main.go:72`, `pkg/reactor/reactor.go:156`, `pkg/reactor/reactor.go:177` |
 | 信号监听 | Signal listener | OS 信号桥；TCP 使用共享 Graceful，HTTP 使用 `signal.NotifyContext`。 | `pkg/utils/graceful.go:22`, `pkg/utils/graceful.go:45`, `http-service/main.go:55` |
 | 事件监听器 | Event listener | Reactor 的生命周期/错误/连接观察者；默认日志，构造时注入。 | `pkg/event/listener.go:5`, `pkg/reactor/reactor.go:42`, `internal/handler/event_listener.go:17` |

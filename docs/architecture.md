@@ -5,7 +5,7 @@ title: Architecture and layers
 
 # Architecture and layers
 
-This analysis describes the source at HEAD `e3dd2e1`. The repository contains two runnable process forms. The HTTP key-value service is one binary (`go run ./http-service`); the TCP Reactor demo is another (`go run ./cmd/server`) with a protocol client (`go run ./cmd/cli`). They do not call each other; dependency direction is toward interface seams.
+This analysis describes the source at HEAD `e3dd2e1` — re-checked at `cc3f241` (audit -G2, 2026-11-14): every anchor below still resolves, and the demo/executor moves since `e3dd2e1` were re-anchored here in the same round. The repository contains two runnable process forms. The HTTP key-value service is one binary (`go run ./http-service`); the TCP Reactor demo is another (`go run ./cmd/server`) with a protocol client (`go run ./cmd/cli`). They do not call each other; dependency direction is toward interface seams.
 
 For term-by-term definitions and source anchors, see the [glossary](/glossary). The reverse link is on that page.
 
