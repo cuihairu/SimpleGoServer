@@ -52,9 +52,17 @@ type Client struct {
 	nextID  uint32
 	pending map[uint32]chan *Response
 
+	// writeMu serializes the socket writes of every outbound path. c.mu
+	// alone cannot: the single-frame path releases it before writing, so
+	// a small request could otherwise land between another caller's
+	// fragments and break the receiver's stream assembly. Holding c.mu
+	// across writes instead would stretch the pending-table lock over
+	// slow socket writes — a dedicated lock keeps both concerns separate.
+	writeMu sync.Mutex
+
 	// streamThreshold is the payload size above which outbound requests
-	// are fragmented; fragments of one request are written under the
-	// lock, so concurrent large calls cannot interleave on the wire.
+	// are fragmented; fragments of one request are written under writeMu,
+	// so concurrent calls cannot interleave on the wire.
 	streamThreshold int
 
 	// pools supplies the encoded wire buffers roundTrip recycles. Inbound
@@ -290,23 +298,23 @@ func (c *Client) roundTrip(t FrameType, respType FrameType, action string, data 
 		c.removePending(id)
 		return nil, err
 	}
+	// Both outbound shapes share writeMu so the wire carries each logical
+	// message whole: a single frame cannot slip between another caller's
+	// fragments (and vice versa). c.mu is dropped first — the pending-table
+	// lock must not stretch across slow socket writes.
+	c.mu.Unlock()
+	c.writeMu.Lock()
 	if msg.buf != nil {
-		// the common case: writing outside the lock keeps a slow socket
-		// from stalling other callers that only want to register
-		c.mu.Unlock()
+		// the common case: one buffer, no slice bookkeeping
 		_, err = c.conn.Write(msg.buf)
-		// the write has consumed the buffer (success or failure), so the
-		// pooled bytes can go back; inbound pooling is deliberately absent
-		// here — see pool.go for why Response.Data's alias forbids it
-		msg.release(c.pools)
 	} else {
-		// fragments of one message must reach the wire back to back, so
-		// concurrent callers cannot interleave their own frames between
-		// them; that is worth holding the lock through the writes
 		_, err = writeAll(c.conn, msg.bufs)
-		c.mu.Unlock()
-		msg.release(c.pools)
 	}
+	c.writeMu.Unlock()
+	// the write has consumed the buffer (success or failure), so the
+	// pooled bytes can go back; inbound pooling is deliberately absent
+	// here — see pool.go for why Response.Data's alias forbids it
+	msg.release(c.pools)
 	if err != nil {
 		c.removePending(id)
 		return nil, err
