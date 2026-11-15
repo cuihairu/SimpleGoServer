@@ -156,6 +156,7 @@ type session struct {
 const defaultSessionTTL = 10 * time.Minute
 
 var _ handler.InboundHandler = (*ProtocolHandler)(nil)
+var _ handler.InactiveHandler = (*ProtocolHandler)(nil)
 
 func NewProtocolHandler(handleRequest RequestHandler) *ProtocolHandler {
 	if handleRequest == nil {
@@ -715,6 +716,30 @@ func (p *ProtocolHandler) removeSubscriber(topic string, conn net.Conn) {
 	// a resume moves it onto the new transport — cleaning the dead one —
 	// by itself. Only an explicit UNSUBSCRIBE removes the recording.
 	p.dropTopicCacheLocked(topic)
+}
+
+// HandleInactive reclaims a dead connection's live subscription memberships.
+// Without it a connection that subscribed and vanished (quiet topic, no
+// failing write to reap it) stayed in the member sets forever — worst for a
+// subscriber that never handshaked, which no session, janitor or resume
+// will ever clean up. The session's subscription intent is deliberately
+// kept: a resumable session must be able to restore these topics on the
+// next handshake, and dropTopicCacheLocked already spares the replay cache
+// while any session still records the topic.
+func (p *ProtocolHandler) HandleInactive(ctx handler.InactiveContext, ex handler.Exception) {
+	conn := ctx.Conn()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for topic, members := range p.subs {
+		if _, member := members[conn]; !member {
+			continue
+		}
+		delete(members, conn)
+		if len(members) == 0 {
+			delete(p.subs, topic)
+			p.dropTopicCacheLocked(topic)
+		}
+	}
 }
 
 // Subscribers returns the current subscriber count of a topic.
