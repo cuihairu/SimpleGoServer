@@ -70,16 +70,31 @@ func (w *WeightedRandomBalancer[T]) Register(WeightedBackend T) error {
 	// A non-positive weight would make preSum non-monotonic, breaking the
 	// sort.Search prefix-false/suffix-true premise and skewing the
 	// distribution; a zero-weight backend should never be selected at all.
-	// Reject it up front, the same rule WeightedRoundRobin enforces.
+	// Reject it up front, the same rule WeightedRoundRobin enforces. This is
+	// the only weight-update entry, so a changed weight is always validated
+	// here and never through some other door that forgets the rebuild.
 	if WeightedBackend.Weight() <= 0 {
 		return fmt.Errorf("backend %q has invalid weight %d: must be positive", WeightedBackend.Id(), WeightedBackend.Weight())
 	}
 	w.rwMutex.Lock()
 	defer w.rwMutex.Unlock()
 	for _, back := range w.backends {
-		if back.Id() == WeightedBackend.Id() {
-			return nil
+		if back.Id() != WeightedBackend.Id() {
+			continue
 		}
+		// An existing id makes this re-registration the weight-update path —
+		// the same rule WeightedRoundRobin applies, pushing the new weight
+		// onto the stored backend.
+		if back.Weight() != WeightedBackend.Weight() {
+			back.SetWeight(WeightedBackend.Weight())
+		}
+		// Rebuild the distribution in the same lock instead of returning nil:
+		// leaving the old preSum in place keeps Next sampling the weight the
+		// backend had before the change — a backend mutated to zero would keep
+		// receiving traffic, and a raise would be ignored until the next
+		// unrelated register or unregister happened to rebuild it.
+		w.buildPreSum()
+		return nil
 	}
 	w.backends = append(w.backends, WeightedBackend)
 	w.buildPreSum()

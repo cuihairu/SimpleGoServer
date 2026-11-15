@@ -101,6 +101,85 @@ func TestWeightedRandomBalancer_RegisterWeightTable(t *testing.T) {
 	}
 }
 
+// TestWeightedRandomBalancer_ReregisterUpdatesDistribution drives a weight
+// change through the real update entry (SetWeight + re-Register) and requires
+// the new weight to actually change what Next samples. A Register that only
+// recognized the id and returned nil would leave the stale preSum in place, so
+// a raised weight would be ignored until some unrelated register or
+// unregister happened to rebuild it.
+func TestWeightedRandomBalancer_ReregisterUpdatesDistribution(t *testing.T) {
+	a := NewFakeBackend("a", 5)
+	b := NewFakeBackend("b", 5)
+	balancer := NewWeightedRandomBalancer[*FakeBackend]()
+	for _, backend := range []*FakeBackend{a, b} {
+		if err := balancer.Register(backend); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// 5:5 means b must be selected about half the time.
+	hits := map[string]int{}
+	const draws = 20000
+	for i := 0; i < draws; i++ {
+		next, err := balancer.Next("k")
+		if err != nil {
+			t.Fatal(err)
+		}
+		hits[next.Id()]++
+	}
+	if hits["b"] < draws*40/100 || hits["b"] > draws*60/100 {
+		t.Fatalf("before re-registration b hit %d/%d, want near 50%%", hits["b"], draws)
+	}
+	// Raise b's weight through the entry point and re-register the same
+	// object: the distribution must move to the new 5:20 split.
+	b.SetWeight(20)
+	if err := balancer.Register(b); err != nil {
+		t.Fatalf("re-registering with a raised weight failed: %v", err)
+	}
+	hits = map[string]int{}
+	for i := 0; i < draws; i++ {
+		next, err := balancer.Next("k")
+		if err != nil {
+			t.Fatal(err)
+		}
+		hits[next.Id()]++
+	}
+	if hits["b"] < draws*75/100 || hits["b"] > draws*85/100 {
+		t.Fatalf("after re-registration b hit %d/%d, want near 80%%", hits["b"], draws)
+	}
+	// The entry also refuses a non-positive weight, and a refused update must
+	// leave the working table untouched rather than half-applying it.
+	fresh := NewWeightedRandomBalancer[*FakeBackend]()
+	if err := fresh.Register(NewFakeBackend("x", 3)); err != nil {
+		t.Fatal(err)
+	}
+	if err := fresh.Register(NewFakeBackend("x", 0)); err == nil {
+		t.Fatal("re-registering with a zero weight must be refused")
+	}
+	if _, err := fresh.Next("k"); err != nil {
+		t.Fatalf("Next after a refused weight update = %v, want the surviving table", err)
+	}
+	if fresh.Size() != 1 {
+		t.Fatalf("Size() = %d, want 1 (a refused update must not remove the backend)", fresh.Size())
+	}
+	// A distinct object with the same id carries the new weight: the entry
+	// pushes it onto the stored backend (the WeightedRoundRobin rule) instead
+	// of keeping the stale weight or duplicating the id.
+	raised := NewFakeBackend("x", 30)
+	if err := fresh.Register(raised); err != nil {
+		t.Fatalf("re-registering a distinct same-id object with a new weight failed: %v", err)
+	}
+	if fresh.Size() != 1 {
+		t.Fatalf("Size() = %d, want 1 (same-id register must not duplicate)", fresh.Size())
+	}
+	stored, err := fresh.Next("k")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Id() != "x" || stored.Weight() != 30 {
+		t.Fatalf("stored backend = (%q, %d), want (x, 30): the new weight must be pushed onto the stored object", stored.Id(), stored.Weight())
+	}
+}
+
 // TestWeightedRandomBalancer_NextRefusesMutatedNonPositiveWeight pins the
 // degenerate case where a registered backend's weight is mutated to zero or
 // negative after registration (bypassing the Register check): preSum[size]
