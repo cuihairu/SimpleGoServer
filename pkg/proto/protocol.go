@@ -72,6 +72,12 @@ type HelloResponse struct {
 	Features []string `json:"features"`
 	Token    string   `json:"token,omitempty"`
 	Resumed  bool     `json:"resumed,omitempty"`
+	// Floors reports, per resumed topic, the lowest sequence number still
+	// held in the topic's replay cache. A cursor below floor-1 can never be
+	// caught up — those frames were evicted — so the client's contiguous
+	// accepted prefix starts at the floor. Optional field: peers that do
+	// not send it leave cursor alignment to the next subscribe response.
+	Floors map[string]uint64 `json:"floors,omitempty"`
 }
 
 // ProtocolHandler is the server-side semantic layer on top of the frame
@@ -382,22 +388,23 @@ func (p *ProtocolHandler) handleHello(ctx handler.InboundContext, frame *Frame) 
 			&ErrorMessage{Error: fmt.Sprintf("no common protocol version (client offers %v, server speaks %v)", req.Versions, supportedVersions)})
 		return
 	}
-	token, resumed, replay, gates := p.attachSession(ctx.Conn(), req.Resume, req.Cursors)
+	res := p.attachSession(ctx.Conn(), req.Resume, req.Cursors)
 	// replay BEFORE the ack: when the client's Handshake returns it can
 	// rely on the catch-up already being on the wire. The resumed topics'
 	// publish gates are still held here, so publishers pinned on them can
 	// only fan out after this loop drops them — a live publish can never
 	// overtake the replayed frames it should follow.
-	p.replayTo(ctx.Conn(), replay)
-	for _, g := range gates {
+	p.replayTo(ctx.Conn(), res.replay)
+	for _, g := range res.gates {
 		g.mu.Unlock()
 		p.releasePublishGate(g)
 	}
 	p.reply(ctx, RESPONSE, frame.Header.StreamId, "hello", &HelloResponse{
 		Version:  chosen,
 		Features: protocolFeatures,
-		Token:    token,
-		Resumed:  resumed,
+		Token:    res.token,
+		Resumed:  res.resumed,
+		Floors:   res.floors,
 	})
 }
 
@@ -417,15 +424,30 @@ func (p *ProtocolHandler) replayTo(conn net.Conn, replay [][]byte) {
 
 // attachSession binds conn to its session: it resumes the session named by
 // the token (moving its recorded topics onto conn and dropping the dead
-// transport), or mints a fresh session. The returned flag reports whether
-// an existing session was resumed; replay carries the wire frames of the
-// cached publishes the client has not seen yet, ordered by sequence. On a
-// resume the returned gates hold the session's topics' publish pipelines
-// LOCKED: the caller must release them (after unlocking) once the replay
-// has been written, so publishers fan out only after the history catch-up
-// is on the wire — a live publish that raced ahead would push the client's
-// cursor past the replayed frames and they would be dropped as stale.
-func (p *ProtocolHandler) attachSession(conn net.Conn, token string, cursors map[string]uint64) (string, bool, [][]byte, []*publishGate) {
+// transport), or mints a fresh session. The result reports whether an
+// existing session was resumed; replay carries the wire frames of the
+// cached publishes the client has not seen yet, ordered by sequence, and
+// floors the per-topic replay-cache floors so a client whose cursor sits
+// below an evicted head can jump to where the catch-up starts. On a resume
+// the returned gates hold the session's topics' publish pipelines LOCKED:
+// the caller must release them (after unlocking) once the replay has been
+// written, so publishers fan out only after the history catch-up is on the
+// wire — a live publish that raced ahead would push the client's cursor
+// past the replayed frames and they would be dropped as stale.
+// attachResult is what attachSession hands back to handleHello: the
+// session token (fresh or resumed), whether an existing session was
+// resumed, the replay frames and cache floors that catch the client up,
+// and — on a resume — the topics' publish gates held LOCKED until the
+// replay has been written.
+type attachResult struct {
+	token   string
+	resumed bool
+	replay  [][]byte
+	floors  map[string]uint64
+	gates   []*publishGate
+}
+
+func (p *ProtocolHandler) attachSession(conn net.Conn, token string, cursors map[string]uint64) attachResult {
 	// Phase 1 peeks the session's topics without holding p.mu: the gates
 	// must be taken gate.mu-first (the same order publishers use) or a
 	// publisher mid-fan-out holding gate.mu and waiting for p.mu would
@@ -476,8 +498,9 @@ func (p *ProtocolHandler) attachSession(conn net.Conn, token string, cursors map
 				s.lastSeen.Store(time.Now().UnixNano())
 				p.connTokens[conn] = token
 				replay := p.collectReplay(s, cursors)
+				floors := p.replayFloorsLocked(s)
 				p.mu.Unlock()
-				return token, true, replay, gates
+				return attachResult{token: token, resumed: true, replay: replay, floors: floors, gates: gates}
 			}
 			p.mu.Unlock()
 			// the session expired between the phases: give the gates back
@@ -496,7 +519,29 @@ func (p *ProtocolHandler) attachSession(conn net.Conn, token string, cursors map
 	p.sessions[token] = ns
 	p.connTokens[conn] = token
 	p.mu.Unlock()
-	return token, false, nil, nil
+	return attachResult{token: token}
+}
+
+// replayFloorsLocked reports the lowest cached sequence per session topic:
+// the floor below which the replay cache can no longer help a lagging
+// client. The caller holds p.mu — and the topics' publish gates, so no
+// concurrent publish can append between this and the replay write. Topics
+// with an empty or missing cache get no entry: nothing to replay, and the
+// cursor needs no adjustment (a reset counter is adopted by the next
+// subscribe response instead).
+func (p *ProtocolHandler) replayFloorsLocked(s *session) map[string]uint64 {
+	var floors map[string]uint64
+	for topic := range s.topics {
+		cache := p.topicCache[topic]
+		if len(cache) == 0 {
+			continue
+		}
+		if floors == nil {
+			floors = make(map[string]uint64)
+		}
+		floors[topic] = uint64(cache[0].seq)
+	}
+	return floors
 }
 
 // collectReplay picks the cached publishes of the session's topics that
@@ -625,6 +670,24 @@ func (p *ProtocolHandler) handleSubscribe(ctx handler.InboundContext, frame *Fra
 	if err != nil {
 		ctx.Close(err)
 		return
+	}
+	if subscribe {
+		// The subscribe response's LastSeq is the replay boundary a
+		// resilient client baselines on: everything at or below it was
+		// never fanned out to this conn, everything above it will be.
+		// Holding the topic's publish gate across [member add + sequence
+		// read] is what makes that exact — an in-flight publisher either
+		// finishes its whole fan-out before the member lands (LastSeq
+		// includes it, the conn missed it) or snapshots this conn and
+		// delivers after (LastSeq excludes it). Without the gate the member
+		// could join between the publisher's member snapshot and its
+		// sequence commit, and the conn would silently miss a publish its
+		// cursor claims it will see. gate.mu-first keeps the publish
+		// pipeline's lock order.
+		gate := p.acquirePublishGate(topic)
+		defer p.releasePublishGate(gate)
+		gate.mu.Lock()
+		defer gate.mu.Unlock()
 	}
 	p.mu.Lock()
 	if subscribe {

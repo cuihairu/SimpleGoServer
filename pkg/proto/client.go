@@ -126,6 +126,12 @@ type HandshakeResult struct {
 	// Resumed reports that the presented token was recognized and the
 	// old subscriptions are live on this connection again.
 	Resumed bool
+	// Floors reports, per resumed topic, the lowest sequence number the
+	// server still holds in its replay cache (absent when the server does
+	// not report floors). A cursor below floor-1 can never be caught up —
+	// those frames were evicted — so a resilient client jumps its cursor
+	// to the floor and treats the prefix below it as closed.
+	Floors map[string]uint64
 }
 
 // SubscribeResponse is what the server reports when a topic is
@@ -177,6 +183,7 @@ func (c *Client) HandshakeWith(session string, cursors map[string]uint64, timeou
 		Features: agreed.Features,
 		Token:    agreed.Token,
 		Resumed:  agreed.Resumed,
+		Floors:   agreed.Floors,
 	}, nil
 }
 

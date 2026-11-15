@@ -287,8 +287,8 @@ func TestResumeExpiringBetweenPhasesReturnsGates(t *testing.T) {
 	client2, _ := net.Pipe()
 	defer client2.Close()
 	go func() {
-		token, resumed, _, gates := ph.attachSession(client2, res.Token, nil)
-		done <- attachResult{token, resumed, len(gates)}
+		got := ph.attachSession(client2, res.Token, nil)
+		done <- attachResult{token: got.token, resumed: got.resumed, gates: len(got.gates)}
 	}()
 
 	// wait until the resume has pinned the gate (refs 1 -> 2)
@@ -337,6 +337,114 @@ func TestResumeExpiringBetweenPhasesReturnsGates(t *testing.T) {
 	}
 	// the expired session itself stays recorded — reaping it is the
 	// janitor's job, not the resume fallback's
+}
+
+// TestSubscribeResponseWaitsForInFlightPublish pins the subscribe-side
+// half of the publish gate: the response's LastSeq is the replay boundary
+// a resilient client baselines on — everything at or below it was never
+// fanned out to this conn, everything above it will be. The schedule
+// freezes the seq-1 publish mid-fan-out and fires the subscribe while it
+// is parked: gated code blocks the subscribe on the topic's gate (no
+// response inside the window) and reads the sequence only after the
+// frozen fan-out completes, so the conn misses seq 1 and the response
+// says exactly 1. Ungated code joins the member between the publisher's
+// member snapshot and its sequence commit, responds while the publish is
+// still frozen, and the conn silently misses a publish its cursor claims
+// it will see.
+func TestSubscribeResponseWaitsForInFlightPublish(t *testing.T) {
+	ph := NewProtocolHandler(echoHandler)
+	t.Cleanup(ph.Close)
+	subWire, _ := Encode(mustFrame(EncodeJSON(SUBSCRIBE, 1, "gate-topic", nil)))
+	conn1 := newGatedConn(subWire, "first")
+	pumpGatedConn(t, ph, conn1)
+
+	// subscribed once the ack write has been recorded
+	deadline := time.Now().Add(2 * time.Second)
+	for len(conn1.wireLog()) == 0 && time.Now().Before(deadline) {
+		time.Sleep(2 * time.Millisecond)
+	}
+	if len(conn1.wireLog()) == 0 {
+		t.Fatal("subscribe ack never reached the wire")
+	}
+
+	firstDone := make(chan struct{})
+	go func() {
+		defer close(firstDone)
+		if _, err := ph.Publish("gate-topic", "first"); err != nil {
+			t.Errorf("first publish: %v", err)
+		}
+	}()
+	waitForGatedWrite(t, conn1, "first publish")
+
+	// a second transport whose subscribe response must wait for the
+	// frozen fan-out
+	client2, _ := pipeHandler(t, ph)
+	pushed := make(chan *Frame, 4)
+	c2 := NewClient(client2, func(frame *Frame) { pushed <- frame })
+	defer c2.Close()
+
+	subRes := make(chan *SubscribeResponse, 1)
+	subErr := make(chan error, 1)
+	go func() {
+		sub, err := c2.SubscribeWithResult("gate-topic", 5*time.Second)
+		if err != nil {
+			subErr <- err
+			return
+		}
+		subRes <- sub
+	}()
+
+	// while the seq-1 fan-out stays frozen, the subscribe must stay parked
+	// on the topic's gate — no response inside the window
+	returned := false
+	deadline = time.Now().Add(400 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		select {
+		case <-subRes:
+			returned = true
+		case err := <-subErr:
+			t.Fatalf("subscribe failed while the fan-out was frozen: %v", err)
+		default:
+		}
+		if returned {
+			break
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	if returned {
+		t.Fatal("subscribe response arrived while the seq-1 fan-out was still frozen")
+	}
+
+	close(conn1.gate)
+	select {
+	case <-firstDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first publish did not finish")
+	}
+	select {
+	case sub := <-subRes:
+		if sub.LastSeq != 1 {
+			t.Fatalf("subscribe LastSeq = %d, want 1 (the frozen publish's sequence)", sub.LastSeq)
+		}
+	case err := <-subErr:
+		t.Fatalf("subscribe failed: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("subscribe did not finish after the fan-out was released")
+	}
+
+	// the boundary holds: the conn missed the frozen seq 1 and the next
+	// publish arrives as seq 2 — nothing below LastSeq ever reaches it
+	if _, err := ph.Publish("gate-topic", "second"); err != nil {
+		t.Fatalf("second publish: %v", err)
+	}
+	select {
+	case frame := <-pushed:
+		if frame.Header.FrameType != PUBLISH || frame.Header.StreamId != 2 {
+			t.Fatalf("first push after subscribe = %s/%d, want PUBLISH/2", frame.Header.FrameType, frame.Header.StreamId)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no push after the second publish")
+	}
 }
 
 // TestResumeReplayReachesWireBeforeLivePublishes pins the resume ordering:

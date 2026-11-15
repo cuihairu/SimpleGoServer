@@ -62,6 +62,11 @@ type ResilientClient struct {
 	client     *Client
 	token      string
 	subscribed map[string]struct{}
+	// baselined marks topics whose cursor was established against a
+	// server-confirmed boundary (the subscribe response's LastSeq), so a
+	// later alignReplayState can tell a first contact from a re-subscribe
+	// of a topic whose sequence survived.
+	baselined map[string]struct{}
 	// cursors is the contiguous accepted prefix per topic. acceptedPublishes
 	// holds accepted sequences beyond that prefix until every older rejected
 	// frame is replayed; it also suppresses duplicate delivery while that
@@ -118,6 +123,13 @@ func (rc *ResilientClient) acknowledgePublish(topic string, seq uint64) {
 		return
 	}
 	rc.cursors[topic] = seq
+	rc.advanceCursorLocked(topic)
+}
+
+// advanceCursorLocked pulls the topic's cursor across accepted sequences
+// that a racing delivery parked beyond it, so the contiguous prefix
+// continues once its gap fills in. The caller holds mu.
+func (rc *ResilientClient) advanceCursorLocked(topic string) {
 	accepted := rc.acceptedPublishes[topic]
 	for len(accepted) > 0 {
 		next := rc.cursors[topic] + 1
@@ -203,6 +215,7 @@ func newResilientClient(addr string, handlerFactory func(*ResilientClient) Event
 		addr:              addr,
 		opts:              opts,
 		subscribed:        make(map[string]struct{}),
+		baselined:         make(map[string]struct{}),
 		cursors:           make(map[string]uint64),
 		acceptedPublishes: make(map[string]map[uint64]struct{}),
 		done:              make(chan struct{}),
@@ -273,19 +286,60 @@ func (rc *ResilientClient) Subscribe(topic string, timeout time.Duration) error 
 // alignReplayState reconciles the per-topic replay bookkeeping with the
 // sequence the server reported at subscribe time. The caller holds mu.
 //
+// A first contact with a topic baselines on the reported sequence: the
+// conn was not a member when sequences at or below LastSeq were fanned
+// out, so the contiguous accepted prefix starts there — not at zero.
+// Without the baseline every later publish parks in acceptedPublishes
+// (none is ever cursor+1) and the set grows without bound. Publishes that
+// raced the subscribe response — delivered and parked before this call —
+// sit above the boundary and pull the cursor across as they drain.
+//
 // The server assigns a topic sequence monotonically while any subscriber
 // or session records the topic, and resets it once the last holder leaves.
-// The handshake's Resumed flag cannot tell the two apart, so the subscribe
-// response reports the current sequence: when it sits below the client's
-// cursor the topic was reset while the client was away, and a stale cursor
-// would silently drop the fresh publishes of the re-subscribed topic.
-// Adopting the reported floor fixes that. When the sequence survived (the
-// reported floor is at or above the cursor) the cursor and any pending
-// accepted gap are left untouched so a rejected frame still replays.
+// For a known topic the handshake's Resumed flag cannot tell the two
+// states apart, so the subscribe response reports the current sequence:
+// when it sits below the client's cursor the topic was reset while the
+// client was away, and a stale cursor would silently drop the fresh
+// publishes of the re-subscribed topic. Adopting the reported floor fixes
+// that. When the sequence survived (the reported floor is at or above the
+// cursor) the cursor and any pending accepted gap are left untouched so a
+// rejected frame still replays.
 func (rc *ResilientClient) alignReplayState(topic string, lastSeq uint64) {
+	if _, seen := rc.baselined[topic]; !seen {
+		rc.baselined[topic] = struct{}{}
+		if lastSeq > rc.cursors[topic] {
+			rc.cursors[topic] = lastSeq
+		}
+		rc.advanceCursorLocked(topic)
+		return
+	}
 	if lastSeq < rc.cursors[topic] {
 		rc.cursors[topic] = lastSeq
 		delete(rc.acceptedPublishes, topic)
+	}
+}
+
+// applyReplayFloorsLocked jumps cursors past sequences the server can no
+// longer replay: a resumed topic whose cache floor sits above cursor+1
+// has evicted the frames the cursor still expects, so the contiguous
+// prefix can only start at the floor. The prefix below it is declared
+// closed — the handler keeps whatever it already accepted live, and the
+// parked acceptances at or above the floor pull the cursor across as they
+// drain (the replay or the live stream re-supplies them). The caller
+// holds mu.
+func (rc *ResilientClient) applyReplayFloorsLocked(floors map[string]uint64) {
+	for topic, floor := range floors {
+		if floor > rc.cursors[topic]+1 {
+			rc.cursors[topic] = floor - 1
+			// acceptances below the new cursor belong to the closed prefix
+			// and would never drain; drop them
+			for seq := range rc.acceptedPublishes[topic] {
+				if seq <= rc.cursors[topic] {
+					delete(rc.acceptedPublishes[topic], seq)
+				}
+			}
+		}
+		rc.advanceCursorLocked(topic)
 	}
 }
 
@@ -302,9 +356,11 @@ func (rc *ResilientClient) Unsubscribe(topic string, timeout time.Duration) erro
 	delete(rc.subscribed, topic)
 	// The server may reset the topic sequence once no subscriber or session
 	// records it; clearing replay state prevents stale cursors from dropping
-	// fresh publishes if the topic is subscribed again.
+	// fresh publishes if the topic is subscribed again. The baseline goes
+	// too: the next subscribe is a fresh first contact.
 	delete(rc.cursors, topic)
 	delete(rc.acceptedPublishes, topic)
+	delete(rc.baselined, topic)
 	rc.mu.Unlock()
 	return nil
 }
@@ -450,6 +506,11 @@ func (rc *ResilientClient) swap(c *Client, res *HandshakeResult) {
 	old := rc.client
 	rc.client = c
 	rc.token = res.Token
+	// jump cursors past frames the server can no longer replay: the
+	// handshake's floors say where the obtainable prefix starts. Replays
+	// that raced the handshake are parked in acceptedPublishes and drain
+	// across the jump.
+	rc.applyReplayFloorsLocked(res.Floors)
 	resubscribe := !res.Resumed
 	topics := make([]string, 0, len(rc.subscribed))
 	for topic := range rc.subscribed {
