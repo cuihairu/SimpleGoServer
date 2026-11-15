@@ -78,12 +78,28 @@ type Client struct {
 
 // Dial connects to addr and starts the read loop.
 func Dial(addr string, onEvent EventHandler) (*Client, error) {
-	conn, err := net.Dial("tcp", addr)
+	conn, err := dialTimeout("tcp", addr, 0)
 	if err != nil {
 		return nil, err
 	}
 	return NewClient(conn, onEvent), nil
 }
+
+// DialTimeout connects to addr with the dial bounded by timeout (zero or
+// negative means no bound, like Dial) and starts the read loop. Resilient
+// reconnects use it so a peer that drops SYNs cannot hang a reconnect
+// attempt past the caller's handshake budget.
+func DialTimeout(addr string, onEvent EventHandler, timeout time.Duration) (*Client, error) {
+	conn, err := dialTimeout("tcp", addr, timeout)
+	if err != nil {
+		return nil, err
+	}
+	return NewClient(conn, onEvent), nil
+}
+
+// dialTimeout is swappable so tests can pin which bound gets passed down
+// without network flakiness.
+var dialTimeout = net.DialTimeout
 
 // NewClient wraps an established connection. It takes ownership of conn.
 func NewClient(conn net.Conn, onEvent EventHandler) *Client {
@@ -303,6 +319,15 @@ func (c *Client) roundTrip(t FrameType, respType FrameType, action string, data 
 	// fragments (and vice versa). c.mu is dropped first — the pending-table
 	// lock must not stretch across slow socket writes.
 	c.mu.Unlock()
+	//
+	// The caller's timeout bounds the send too, armed before the lock: an
+	// unbounded write would wedge writeMu for every other caller the
+	// moment a peer stops reading, turning "Call with timeout" into
+	// "Call that never returns". Zero timeout keeps the documented
+	// wait-forever behavior.
+	if timeout > 0 {
+		_ = c.conn.SetWriteDeadline(time.Now().Add(timeout))
+	}
 	c.writeMu.Lock()
 	if msg.buf != nil {
 		// the common case: one buffer, no slice bookkeeping
@@ -311,6 +336,9 @@ func (c *Client) roundTrip(t FrameType, respType FrameType, action string, data 
 		_, err = writeAll(c.conn, msg.bufs)
 	}
 	c.writeMu.Unlock()
+	if timeout > 0 {
+		_ = c.conn.SetWriteDeadline(time.Time{})
+	}
 	// the write has consumed the buffer (success or failure), so the
 	// pooled bytes can go back; inbound pooling is deliberately absent
 	// here — see pool.go for why Response.Data's alias forbids it

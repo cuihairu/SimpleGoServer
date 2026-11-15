@@ -166,14 +166,17 @@ func TestCallWriteOrderNoInterleavedFragments(t *testing.T) {
 		close(conn.letLast)
 	}
 
+	// neither call ever gets a response, so each returns via its own 2s
+	// call timeout once its write completes; the waits only need to
+	// outlast that — the wire-order assertion below is what matters
 	select {
 	case <-tinyDone:
-	case <-time.After(2 * time.Second):
+	case <-time.After(3 * time.Second):
 		t.Fatal("tiny call did not finish")
 	}
 	select {
 	case <-bigDone:
-	case <-time.After(2 * time.Second):
+	case <-time.After(3 * time.Second):
 		t.Fatal("big call did not finish")
 	}
 

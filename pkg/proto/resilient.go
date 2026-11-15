@@ -365,7 +365,10 @@ func (rc *ResilientClient) current() (*Client, error) {
 // dialAndHandshake opens a connection and resumes the remembered session,
 // reporting the replay cursors so missed publishes are sent again.
 func (rc *ResilientClient) dialAndHandshake(timeout time.Duration) (*Client, *HandshakeResult, error) {
-	c, err := Dial(rc.addr, rc.onEvent)
+	// the handshake budget bounds the dial itself, not just the HELLO
+	// round trip: a peer that drops packets would otherwise hang the
+	// reconnect attempt forever inside net.Dial
+	c, err := DialTimeout(rc.addr, rc.onEvent, timeout)
 	if err != nil {
 		return nil, nil, err
 	}
