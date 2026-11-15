@@ -11,6 +11,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -86,6 +87,14 @@ type ProtocolHandler struct {
 	pings     atomic.Uint64
 	pongs     atomic.Uint64
 	topicSeqs map[string]*atomic.Uint32
+
+	// publishGates serializes each topic's publish pipeline: sequence
+	// commit, replay-cache write, and subscriber fan-out run inside one
+	// gate so a subscriber can never observe seq N+1 before seq N. Entries
+	// exist only while publishers are active or contending (refcounted —
+	// see acquirePublishGateLocked) and are retired when the last one
+	// leaves.
+	publishGates map[string]*publishGate
 
 	// resumable sessions, see handleHello. connTokens is the reverse index
 	// so a SUBSCRIBE frame can find the session to record the topic in
@@ -172,6 +181,7 @@ func NewProtocolHandler(handleRequest RequestHandler) *ProtocolHandler {
 		connTokens:    make(map[net.Conn]string),
 		topicCache:    make(map[string][]cachedPublish),
 		topicSeqs:     make(map[string]*atomic.Uint32),
+		publishGates:  make(map[string]*publishGate),
 		cacheBudget:   defaultCacheBudget,
 		closed:        make(chan struct{}),
 		sessionTTL:    defaultSessionTTL,
@@ -372,11 +382,17 @@ func (p *ProtocolHandler) handleHello(ctx handler.InboundContext, frame *Frame) 
 			&ErrorMessage{Error: fmt.Sprintf("no common protocol version (client offers %v, server speaks %v)", req.Versions, supportedVersions)})
 		return
 	}
-	token, resumed, replay := p.attachSession(ctx.Conn(), req.Resume, req.Cursors)
+	token, resumed, replay, gates := p.attachSession(ctx.Conn(), req.Resume, req.Cursors)
 	// replay BEFORE the ack: when the client's Handshake returns it can
-	// rely on the catch-up already being on the wire, and replayed frames
-	// never race live publishes written after the ack
+	// rely on the catch-up already being on the wire. The resumed topics'
+	// publish gates are still held here, so publishers pinned on them can
+	// only fan out after this loop drops them — a live publish can never
+	// overtake the replayed frames it should follow.
 	p.replayTo(ctx.Conn(), replay)
+	for _, g := range gates {
+		g.mu.Unlock()
+		p.releasePublishGate(g)
+	}
 	p.reply(ctx, RESPONSE, frame.Header.StreamId, "hello", &HelloResponse{
 		Version:  chosen,
 		Features: protocolFeatures,
@@ -403,39 +419,84 @@ func (p *ProtocolHandler) replayTo(conn net.Conn, replay [][]byte) {
 // the token (moving its recorded topics onto conn and dropping the dead
 // transport), or mints a fresh session. The returned flag reports whether
 // an existing session was resumed; replay carries the wire frames of the
-// cached publishes the client has not seen yet, ordered by sequence.
-func (p *ProtocolHandler) attachSession(conn net.Conn, token string, cursors map[string]uint64) (string, bool, [][]byte) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
+// cached publishes the client has not seen yet, ordered by sequence. On a
+// resume the returned gates hold the session's topics' publish pipelines
+// LOCKED: the caller must release them (after unlocking) once the replay
+// has been written, so publishers fan out only after the history catch-up
+// is on the wire — a live publish that raced ahead would push the client's
+// cursor past the replayed frames and they would be dropped as stale.
+func (p *ProtocolHandler) attachSession(conn net.Conn, token string, cursors map[string]uint64) (string, bool, [][]byte, []*publishGate) {
+	// Phase 1 peeks the session's topics without holding p.mu: the gates
+	// must be taken gate.mu-first (the same order publishers use) or a
+	// publisher mid-fan-out holding gate.mu and waiting for p.mu would
+	// deadlock against this resume.
 	if token != "" {
-		if s, ok := p.sessions[token]; ok && time.Since(time.Unix(0, s.lastSeen.Load())) <= p.sessionTTL {
-			// move the recorded topics onto the new transport: the dead
-			// connection leaves every member set, conn takes its place
+		p.mu.RLock()
+		s, ok := p.sessions[token]
+		resumable := ok && time.Since(time.Unix(0, s.lastSeen.Load())) <= p.sessionTTL
+		var topics []string
+		if resumable {
 			for topic := range s.topics {
-				members := p.subs[topic]
-				if members == nil {
-					members = make(map[net.Conn]struct{})
-					p.subs[topic] = members
-				}
-				delete(members, s.conn)
-				members[conn] = struct{}{}
+				topics = append(topics, topic)
 			}
-			delete(p.connTokens, s.conn)
-			s.conn = conn
-			s.lastSeen.Store(time.Now().UnixNano())
-			p.connTokens[conn] = token
-			return token, true, p.collectReplay(s, cursors)
 		}
-		// unknown, expired or empty: fall through to a fresh session
+		p.mu.RUnlock()
+
+		if resumable {
+			// sorted order keeps multi-topic resumes deterministic; the
+			// member move below re-reads s.topics so topics recorded in
+			// between still move (they just ride unpinned — reachable only
+			// through a token shared by two concurrent resumes, which the
+			// protocol never produces).
+			sort.Strings(topics)
+			gates := make([]*publishGate, 0, len(topics))
+			for _, topic := range topics {
+				g := p.acquirePublishGate(topic)
+				g.mu.Lock()
+				gates = append(gates, g)
+			}
+			// Phase 2 moves the recorded topics onto the new transport
+			// under p.mu while the gates hold publishers off: any publisher
+			// waiting on a gate can only snapshot members — including this
+			// conn — after the caller has written the replay.
+			p.mu.Lock()
+			s, ok := p.sessions[token]
+			if ok && time.Since(time.Unix(0, s.lastSeen.Load())) <= p.sessionTTL {
+				for topic := range s.topics {
+					members := p.subs[topic]
+					if members == nil {
+						members = make(map[net.Conn]struct{})
+						p.subs[topic] = members
+					}
+					delete(members, s.conn)
+					members[conn] = struct{}{}
+				}
+				delete(p.connTokens, s.conn)
+				s.conn = conn
+				s.lastSeen.Store(time.Now().UnixNano())
+				p.connTokens[conn] = token
+				replay := p.collectReplay(s, cursors)
+				p.mu.Unlock()
+				return token, true, replay, gates
+			}
+			p.mu.Unlock()
+			// the session expired between the phases: give the gates back
+			// and fall through to a fresh session
+			for _, g := range gates {
+				g.mu.Unlock()
+				p.releasePublishGate(g)
+			}
+		}
 	}
 
 	token = newSessionToken()
 	ns := &session{conn: conn, topics: make(map[string]struct{})}
 	ns.lastSeen.Store(time.Now().UnixNano())
+	p.mu.Lock()
 	p.sessions[token] = ns
 	p.connTokens[conn] = token
-	return token, false, nil
+	p.mu.Unlock()
+	return token, false, nil, nil
 }
 
 // collectReplay picks the cached publishes of the session's topics that
@@ -638,15 +699,71 @@ func (p *ProtocolHandler) topicOf(frame *Frame) (string, error) {
 // publisher forever.
 const publishWriteTimeout = 3 * time.Second
 
+// publishGate serializes one topic's publish pipeline: everything between
+// sequence commit and subscriber fan-out runs inside the gate, so a
+// subscriber cannot observe seq N+1 before seq N and the replay cache is
+// appended in sequence order. The refcount lets a quiet gate be retired
+// without racing a blocked publisher back onto a fresh gate: a bare map
+// delete would let the waiter mint a second gate and run concurrently
+// with the one still draining.
+type publishGate struct {
+	topic string
+	mu    sync.Mutex
+	refs  int
+}
+
+// acquirePublishGateLocked returns the topic's gate, creating it on first
+// use, and pins it with a reference so it survives until this publisher
+// releases it. The caller holds p.mu.
+func (p *ProtocolHandler) acquirePublishGateLocked(topic string) *publishGate {
+	g := p.publishGates[topic]
+	if g == nil {
+		g = &publishGate{topic: topic}
+		p.publishGates[topic] = g
+	}
+	g.refs++
+	return g
+}
+
+// acquirePublishGate pins and returns the topic's gate.
+func (p *ProtocolHandler) acquirePublishGate(topic string) *publishGate {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.acquirePublishGateLocked(topic)
+}
+
+// releasePublishGate drops the publisher's reference and retires the gate
+// when the last one leaves, so the map cannot accumulate quiet topics.
+func (p *ProtocolHandler) releasePublishGate(g *publishGate) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	g.refs--
+	if g.refs == 0 {
+		delete(p.publishGates, g.topic)
+	}
+}
+
 // Publish broadcasts payload to every subscriber of topic. Deliveries are
 // best-effort: a subscriber whose write fails or times out is dropped from
 // the topic. It returns the number of subscribers the message was written
 // to.
+//
+// The whole pipeline — sequence commit, cache append, fan-out — runs inside
+// the topic's publish gate: without it two concurrent publishers could mint
+// seq 1 and 2 and land seq 2 on the wire first. A confirm-mode client's
+// cursor would jump to 2, the late seq 1 would be dropped as stale, and the
+// reconnect replay (which sends only frames newer than the cursor) could
+// never repair the gap.
 func (p *ProtocolHandler) Publish(topic string, payload any) (int, error) {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return 0, err
 	}
+	gate := p.acquirePublishGate(topic)
+	defer p.releasePublishGate(gate)
+	gate.mu.Lock()
+	defer gate.mu.Unlock()
+
 	p.mu.RLock()
 	members := make([]net.Conn, 0, len(p.subs[topic]))
 	for conn := range p.subs[topic] {
