@@ -668,11 +668,22 @@ func (p *ProtocolHandler) Publish(topic string, payload any) (int, error) {
 		p.topicSeqs[topic] = topicSeq
 	}
 	p.mu.Unlock()
-	frame := newFrame(PUBLISH, topicSeq.Add(1), mustJSON(topic, body))
-	buf, err := Encode(frame)
-	if err != nil {
-		return 0, err
+	wire := mustJSON(topic, body)
+	// validate the wire size BEFORE committing a sequence number: Encode
+	// rejects oversize payloads, and a seq consumed by a rejected frame
+	// would leave a permanent hole — confirm-mode clients would wait
+	// forever for a message that never existed, and every later publish
+	// would widen the gap
+	if len(wire) > MaxFrameSize {
+		return 0, fmt.Errorf("proto: publish to %q exceeds the frame limit (%d > %d)", topic, len(wire), MaxFrameSize)
 	}
+	frame := newFrame(PUBLISH, topicSeq.Add(1), wire)
+	// Encode cannot fail here: wire is a non-empty JSON envelope sized
+	// against MaxFrameSize just above, which excludes Encode's only
+	// failure modes (nil frame, empty payload, oversize payload). There
+	// is deliberately no error path — same policy as reply() and mustJSON.
+	buf, _ := Encode(frame)
+
 	// the publish exists the moment it is encoded: cache it for replaying
 	// to sessions that reconnect later, whether this round reaches
 	// everyone or not

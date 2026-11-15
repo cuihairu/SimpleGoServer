@@ -2,6 +2,7 @@ package proto
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 )
@@ -87,5 +88,62 @@ func TestProtocolHandlerPublishDropsBrokenSubscriber(t *testing.T) {
 	}
 	if got := ph.Subscribers("t2"); got != 0 {
 		t.Fatalf("subscribers = %d after failed publish, want 0", got)
+	}
+}
+
+// TestPublishOversizeDoesNotConsumeSequence pins the sequence-hole fix:
+// Encode rejects oversize payloads, and the rejection must happen BEFORE
+// the topic sequence is committed — otherwise the failed publish leaves a
+// permanent hole, confirm-mode clients wait forever for the missing seq,
+// and every later publish widens the gap.
+func TestPublishOversizeDoesNotConsumeSequence(t *testing.T) {
+	ph, conn := pipeServer(t, echoHandler)
+	sub, _ := EncodeJSON(SUBSCRIBE, 1, "hole-topic", nil)
+	writeFrame(t, conn, sub)
+	readFrame(t, conn)
+
+	// payload big enough that the encoded envelope exceeds MaxFrameSize
+	oversize := json.RawMessage(`[` + strings.Repeat("1,", MaxFrameSize/2) + `1]`)
+	delivered, err := ph.Publish("hole-topic", oversize)
+	if err == nil {
+		t.Fatalf("oversize publish = (%d, nil), want an error", delivered)
+	}
+
+	// the rejected publish must not have consumed a sequence number
+	if got := ph.topicSequenceLocked("hole-topic"); got != 0 {
+		t.Fatalf("topic sequence after rejected publish = %d, want 0 (no hole)", got)
+	}
+	ph.mu.RLock()
+	cache := len(ph.topicCache["hole-topic"])
+	ph.mu.RUnlock()
+	if cache != 0 {
+		t.Fatalf("replay cache holds %d entries after a rejected publish, want 0", cache)
+	}
+
+	// the next publish must be sequence 1, not 2 — no gap for a client
+	// to wait on. net.Pipe is synchronous, so drain the pushed frame
+	// concurrently with the publish.
+	type pubResult struct {
+		n   int
+		err error
+	}
+	done := make(chan pubResult, 1)
+	go func() {
+		n, err := ph.Publish("hole-topic", "ok")
+		done <- pubResult{n, err}
+	}()
+	pushed := readFrame(t, conn)
+	if pushed.Header.StreamId != 1 {
+		t.Fatalf("first good publish sequence = %d, want 1 (no hole consumed the seq)", pushed.Header.StreamId)
+	}
+	res := <-done
+	if res.err != nil {
+		t.Fatalf("publish after rejection: %v", res.err)
+	}
+	if res.n != 1 {
+		t.Fatalf("delivered = %d, want 1", res.n)
+	}
+	if got := ph.topicSequenceLocked("hole-topic"); got != 1 {
+		t.Fatalf("topic sequence after first good publish = %d, want 1 (continuous)", got)
 	}
 }
