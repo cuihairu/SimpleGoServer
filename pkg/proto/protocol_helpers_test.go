@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	handlerImpl "github.com/cuihairu/simplegoserver/internal/handler"
 	"github.com/cuihairu/simplegoserver/pkg/handler"
 )
 
@@ -30,7 +29,7 @@ func pipeServer(t *testing.T, requestHandler RequestHandler) (ph *ProtocolHandle
 	t.Helper()
 	serverSide, clientSide := net.Pipe()
 	ph = NewProtocolHandler(requestHandler)
-	pipeline := handlerImpl.NewPipeline(serverSide)
+	pipeline := handler.NewPipeline(serverSide)
 	_ = pipeline.AddLast(NewFrameCodec(), ph)
 	done := make(chan struct{})
 	go func() {
@@ -113,7 +112,7 @@ func startTCPServer(t *testing.T, requestHandler RequestHandler) (addr string, p
 
 func serveConn(conn net.Conn, ph *ProtocolHandler) {
 	tracked := &trackingConn{Conn: conn}
-	pipeline := handlerImpl.NewPipeline(tracked)
+	pipeline := handler.NewPipeline(tracked)
 	_ = pipeline.AddLast(NewFrameCodec(), ph)
 	for {
 		pipeline.FireRead(tracked)

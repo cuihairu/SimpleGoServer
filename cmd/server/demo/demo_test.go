@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	handlerImpl "github.com/cuihairu/simplegoserver/internal/handler"
+	handler "github.com/cuihairu/simplegoserver/pkg/handler"
 	"github.com/cuihairu/simplegoserver/pkg/proto"
 )
 
@@ -16,7 +16,7 @@ import (
 // the reactor worker drives a connection.
 func servePump(t *testing.T, conn net.Conn) {
 	t.Helper()
-	p := handlerImpl.NewPipeline(conn)
+	p := handler.NewPipeline(conn)
 	if err := Initializer(p); err != nil {
 		t.Errorf("Initializer returned an error: %v", err)
 	}

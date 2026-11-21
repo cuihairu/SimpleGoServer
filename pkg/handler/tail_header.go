@@ -2,7 +2,6 @@ package handler
 
 import (
 	"fmt"
-	"github.com/cuihairu/simplegoserver/pkg/handler"
 	"os"
 	"sync"
 )
@@ -22,7 +21,7 @@ func NewTailHeader() *TailHeader {
 	return instanceTailHeader
 }
 
-func (t TailHeader) HandleException(ctx handler.ExceptionContext, ex handler.Exception) {
+func (t TailHeader) HandleException(ctx ExceptionContext, ex Exception) {
 	fmt.Fprintln(os.Stderr,
 		"An HandleException() event was fired, and it reached at the tail of the pipeline.",
 		"It usually means the last handler in the pipeline did not handle the exception.",
@@ -33,4 +32,4 @@ func (t TailHeader) HandleException(ctx handler.ExceptionContext, ex handler.Exc
 	_ = ctx.Conn().Close()
 }
 
-var _ handler.ExceptionHandler = (*TailHeader)(nil)
+var _ ExceptionHandler = (*TailHeader)(nil)

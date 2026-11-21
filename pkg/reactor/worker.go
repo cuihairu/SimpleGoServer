@@ -9,7 +9,6 @@ import (
 	"time"
 
 	balancerImpl "github.com/cuihairu/simplegoserver/internal/balancer"
-	handlerImpl "github.com/cuihairu/simplegoserver/internal/handler"
 	"github.com/cuihairu/simplegoserver/pkg"
 	"github.com/cuihairu/simplegoserver/pkg/event"
 	"github.com/cuihairu/simplegoserver/pkg/handler"
@@ -58,7 +57,7 @@ func NewWorkerGroup(opts pkg.Options, ctx context.Context, eventListener event.L
 		serverOptions.NumWorkers = runtime.NumCPU()
 	}
 	if pipelineInitializer == nil {
-		pipelineInitializer = handlerImpl.WithDefaultPipeline
+		pipelineInitializer = handler.WithDefaultPipeline
 	}
 	if balancer == nil {
 		// adaptive default: route new connections to the least loaded
@@ -280,7 +279,7 @@ func (c *lifecycleConn) Close() error {
 }
 
 func (w *Worker) handleConnection(lc *lifecycleConn) {
-	pipeline := handlerImpl.NewPipeline(lc)
+	pipeline := handler.NewPipeline(lc)
 	err := w.pipelineInitializer(pipeline)
 	if err != nil {
 		// a broken initializer is a programming error; undo the

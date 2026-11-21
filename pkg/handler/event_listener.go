@@ -2,7 +2,6 @@ package handler
 
 import (
 	"github.com/cuihairu/simplegoserver/pkg/event"
-	"github.com/cuihairu/simplegoserver/pkg/handler"
 	"log"
 	"net"
 	"os"
@@ -39,7 +38,7 @@ func (e ErrorHandler) OnConnect(conn net.Conn) {
 	e.logger.Printf("new connect :%s", conn.RemoteAddr())
 }
 
-func (e ErrorHandler) HandleException(ctx handler.ExceptionContext, ex handler.Exception) {
+func (e ErrorHandler) HandleException(ctx ExceptionContext, ex Exception) {
 	e.errLogger.Printf("handle exception :%s", ex)
 }
 
@@ -53,5 +52,5 @@ func NewErrorHandler() *ErrorHandler {
 	return instanceErrorHandler
 }
 
-var _ handler.ExceptionHandler = (*ErrorHandler)(nil)
+var _ ExceptionHandler = (*ErrorHandler)(nil)
 var _ event.Listener = (*ErrorHandler)(nil)

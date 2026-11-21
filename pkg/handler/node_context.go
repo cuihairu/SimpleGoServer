@@ -3,42 +3,40 @@ package handler
 import (
 	"net"
 	"sync"
-
-	"github.com/cuihairu/simplegoserver/pkg/handler"
 )
 
 type NodeContext struct {
-	pipeline         handler.Pipeline
-	handler          handler.Handler
+	pipeline         Pipeline
+	handler          Handler
 	prev             *NodeContext
 	next             *NodeContext
-	activeHandler    handler.ActiveHandler
-	inboundHandler   handler.InboundHandler
-	outboundHandler  handler.OutboundHandler
-	exceptionHandler handler.ExceptionHandler
-	inactiveHandler  handler.InactiveHandler
+	activeHandler    ActiveHandler
+	inboundHandler   InboundHandler
+	outboundHandler  OutboundHandler
+	exceptionHandler ExceptionHandler
+	inactiveHandler  InactiveHandler
 
 	// per-connection attachment (e.g. a codec's partial-frame buffer);
 	// handlers may set it from pipeline callbacks on different goroutines,
 	// so access is guarded
 	attachMu   sync.RWMutex
-	attachment handler.Attachment
+	attachment Attachment
 }
 
-var _ handler.Context = (*NodeContext)(nil)
+var _ Context = (*NodeContext)(nil)
 
-func NewNodeContext(pipeline handler.Pipeline, h handler.Handler, prev *NodeContext, next *NodeContext) *NodeContext {
+func NewNodeContext(pipeline Pipeline, h Handler, prev *NodeContext, next *NodeContext) *NodeContext {
 	n := &NodeContext{
 		pipeline: pipeline,
 		handler:  h,
 		prev:     prev,
 		next:     next,
 	}
-	n.activeHandler, _ = h.(handler.ActiveHandler)
-	n.inboundHandler, _ = h.(handler.InboundHandler)
-	n.outboundHandler, _ = h.(handler.OutboundHandler)
-	n.exceptionHandler, _ = h.(handler.ExceptionHandler)
-	n.inactiveHandler, _ = h.(handler.InactiveHandler)
+	n.activeHandler, _ = h.(ActiveHandler)
+	n.inboundHandler, _ = h.(InboundHandler)
+	n.outboundHandler, _ = h.(OutboundHandler)
+	n.exceptionHandler, _ = h.(ExceptionHandler)
+	n.inactiveHandler, _ = h.(InactiveHandler)
 	return n
 }
 
@@ -46,11 +44,11 @@ func (n *NodeContext) Conn() net.Conn {
 	return n.pipeline.Conn()
 }
 
-func (n *NodeContext) Handler() handler.Handler {
+func (n *NodeContext) Handler() Handler {
 	return n.handler
 }
 
-func (n *NodeContext) Write(message handler.Message) {
+func (n *NodeContext) Write(message Message) {
 	defer func() {
 		if err := recover(); err != nil {
 			n.pipeline.FireException(err)
@@ -71,19 +69,19 @@ func (n *NodeContext) Close(exception error) {
 	_ = n.pipeline.Conn().Close()
 }
 
-func (n *NodeContext) Attachment() handler.Attachment {
+func (n *NodeContext) Attachment() Attachment {
 	n.attachMu.RLock()
 	defer n.attachMu.RUnlock()
 	return n.attachment
 }
 
-func (n *NodeContext) SetAttachment(attachment handler.Attachment) {
+func (n *NodeContext) SetAttachment(attachment Attachment) {
 	n.attachMu.Lock()
 	n.attachment = attachment
 	n.attachMu.Unlock()
 }
 
-var _ handler.ActiveContext = (*NodeContext)(nil)
+var _ ActiveContext = (*NodeContext)(nil)
 
 func (n *NodeContext) HandleActive() {
 	// inbound propagation starts at the next node, skipping the handler
@@ -96,9 +94,9 @@ func (n *NodeContext) HandleActive() {
 	}
 }
 
-var _ handler.InboundContext = (*NodeContext)(nil)
+var _ InboundContext = (*NodeContext)(nil)
 
-func (n *NodeContext) HandleRead(message handler.Message) {
+func (n *NodeContext) HandleRead(message Message) {
 	// see HandleActive: skip self when propagating inbound
 	for cur := n.next; cur != nil; cur = cur.next {
 		if cur.inboundHandler != nil {
@@ -108,9 +106,9 @@ func (n *NodeContext) HandleRead(message handler.Message) {
 	}
 }
 
-var _ handler.OutboundContext = (*NodeContext)(nil)
+var _ OutboundContext = (*NodeContext)(nil)
 
-func (n *NodeContext) HandleWrite(message handler.Message) {
+func (n *NodeContext) HandleWrite(message Message) {
 	// see Write: outbound propagation starts at the previous node
 	for cur := n.prev; cur != nil; cur = cur.prev {
 		if cur.outboundHandler != nil {
@@ -120,9 +118,9 @@ func (n *NodeContext) HandleWrite(message handler.Message) {
 	}
 }
 
-var _ handler.ExceptionContext = (*NodeContext)(nil)
+var _ ExceptionContext = (*NodeContext)(nil)
 
-func (n *NodeContext) HandleException(ex handler.Exception) {
+func (n *NodeContext) HandleException(ex Exception) {
 	// see HandleActive: skip self when propagating inbound
 	for cur := n.next; cur != nil; cur = cur.next {
 		if cur.exceptionHandler != nil {
@@ -132,9 +130,9 @@ func (n *NodeContext) HandleException(ex handler.Exception) {
 	}
 }
 
-var _ handler.InactiveContext = (*NodeContext)(nil)
+var _ InactiveContext = (*NodeContext)(nil)
 
-func (n *NodeContext) HandleInactive(ex handler.Exception) {
+func (n *NodeContext) HandleInactive(ex Exception) {
 	// see HandleActive: skip self when propagating inbound
 	for cur := n.next; cur != nil; cur = cur.next {
 		if cur.inactiveHandler != nil {

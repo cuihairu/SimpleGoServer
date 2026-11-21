@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	handlerImpl "github.com/cuihairu/simplegoserver/internal/handler"
 	"github.com/cuihairu/simplegoserver/pkg"
 	"github.com/cuihairu/simplegoserver/pkg/event"
 	"github.com/cuihairu/simplegoserver/pkg/handler"
@@ -44,7 +43,7 @@ func NewReactor(opts pkg.Options, logger *log.Logger, eventListener event.Listen
 		logger = log.New(os.Stdout, "", log.LstdFlags|log.Lmicroseconds)
 	}
 	if eventListener == nil {
-		eventListener = handlerImpl.NewErrorHandler()
+		eventListener = handler.NewErrorHandler()
 	}
 	serverOptions, ok := opts.(*ServerOptions)
 	if !ok {

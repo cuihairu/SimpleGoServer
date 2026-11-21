@@ -10,7 +10,6 @@ import (
 	"time"
 
 	balancerImpl "github.com/cuihairu/simplegoserver/internal/balancer"
-	handlerImpl "github.com/cuihairu/simplegoserver/internal/handler"
 	"github.com/cuihairu/simplegoserver/pkg"
 	"github.com/cuihairu/simplegoserver/pkg/handler"
 	"github.com/cuihairu/simplegoserver/pkg/proto"
@@ -203,7 +202,7 @@ func TestReactorKeepsActiveConnectionsAlive(t *testing.T) {
 // blind channel send would park it in a buffer nobody drains, leaking the
 // fd for the rest of the process lifetime.
 func TestWorkerAddConnAfterStopRejectsConnection(t *testing.T) {
-	worker := NewWorker(context.Background(), "worker:test", handlerImpl.NewErrorHandler(), echoInitializer, false, 0, NewConnectionRegistry(), &WorkerGroup{})
+	worker := NewWorker(context.Background(), "worker:test", handler.NewErrorHandler(), echoInitializer, false, 0, NewConnectionRegistry(), &WorkerGroup{})
 	go worker.Run()
 	worker.Stop()
 

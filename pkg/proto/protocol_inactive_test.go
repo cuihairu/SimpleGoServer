@@ -5,7 +5,6 @@ import (
 	"net"
 	"testing"
 
-	handlerImpl "github.com/cuihairu/simplegoserver/internal/handler"
 	"github.com/cuihairu/simplegoserver/pkg/handler"
 )
 
@@ -15,7 +14,7 @@ import (
 func pipeHandler(t *testing.T, ph *ProtocolHandler) (client, server net.Conn) {
 	t.Helper()
 	client, server = net.Pipe()
-	pipeline := handlerImpl.NewPipeline(server)
+	pipeline := handler.NewPipeline(server)
 	_ = pipeline.AddLast(NewFrameCodec(), ph)
 	done := make(chan struct{})
 	go func() {

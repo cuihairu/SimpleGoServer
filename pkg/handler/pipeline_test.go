@@ -4,8 +4,6 @@ import (
 	"net"
 	"sync"
 	"testing"
-
-	"github.com/cuihairu/simplegoserver/pkg/handler"
 )
 
 // readRecorder is an inbound handler that logs its name and keeps the
@@ -15,7 +13,7 @@ type readRecorder struct {
 	events *[]string
 }
 
-func (r *readRecorder) HandleRead(ctx handler.InboundContext, message handler.Message) {
+func (r *readRecorder) HandleRead(ctx InboundContext, message Message) {
 	*r.events = append(*r.events, r.name)
 	ctx.HandleRead(message)
 }
@@ -27,7 +25,7 @@ type writeRecorder struct {
 	events *[]string
 }
 
-func (r *writeRecorder) HandleWrite(ctx handler.OutboundContext, message handler.Message) {
+func (r *writeRecorder) HandleWrite(ctx OutboundContext, message Message) {
 	*r.events = append(*r.events, r.name)
 	ctx.HandleWrite(message)
 }
@@ -86,7 +84,7 @@ func TestPipelineIndexLookups(t *testing.T) {
 	p.AddLast(a, b)
 
 	// index space: head sentinel = 0, then a, b, tail sentinel
-	isB := func(h handler.Handler) bool { return h == handler.Handler(b) }
+	isB := func(h Handler) bool { return h == Handler(b) }
 	if got := p.IndexOf(isB); got != 2 {
 		t.Fatalf("IndexOf(b) = %d, want 2", got)
 	}
@@ -95,12 +93,12 @@ func TestPipelineIndexLookups(t *testing.T) {
 	}
 	// regression: LastIndexOf used to walk tail.next (nil) and report -1
 	// for every node except the tail sentinel
-	isA := func(h handler.Handler) bool { return h == handler.Handler(a) }
+	isA := func(h Handler) bool { return h == Handler(a) }
 	if got := p.LastIndexOf(isA); got != 1 {
 		t.Fatalf("LastIndexOf(a) = %d, want 1", got)
 	}
 	ctxB := p.ContextAt(2)
-	if ctxB == nil || ctxB.Handler() != handler.Handler(b) {
+	if ctxB == nil || ctxB.Handler() != Handler(b) {
 		t.Fatalf("ContextAt(2) = %v, want b's context", ctxB)
 	}
 	if p.ContextAt(p.Size()) != nil || p.ContextAt(-1) != nil {
@@ -140,7 +138,7 @@ func TestPipelineAddHandlerInsertsAfterPosition(t *testing.T) {
 	p.AddLast(a, b)
 	x := &readRecorder{name: "x"}
 	p.AddHandler(1, x) // inserts after the node at position 1 (a), i.e. between a and b
-	isX := func(h handler.Handler) bool { return h == handler.Handler(x) }
+	isX := func(h Handler) bool { return h == Handler(x) }
 	if got := p.IndexOf(isX); got != 2 {
 		t.Fatalf("IndexOf(x) = %d, want 2", got)
 	}
@@ -185,10 +183,10 @@ func TestPipelineIndexLookupMisses(t *testing.T) {
 	p := newTestPipeline(t)
 	p.AddLast(&readRecorder{}, &writeRecorder{})
 
-	if got := p.IndexOf(func(h handler.Handler) bool { return false }); got != -1 {
+	if got := p.IndexOf(func(h Handler) bool { return false }); got != -1 {
 		t.Fatalf("IndexOf miss = %d, want -1", got)
 	}
-	if got := p.LastIndexOf(func(h handler.Handler) bool { return false }); got != -1 {
+	if got := p.LastIndexOf(func(h Handler) bool { return false }); got != -1 {
 		t.Fatalf("LastIndexOf miss = %d, want -1", got)
 	}
 }
@@ -228,7 +226,6 @@ func TestPipelineAddPanicsOnInvalidInput(t *testing.T) {
 
 // TestWithDefaultPipeline covers the package's default initializer: a nil
 // pipeline is rejected, a real one gains the error handler as its last
-// handler.
 func TestWithDefaultPipeline(t *testing.T) {
 	if err := WithDefaultPipeline(nil); err == nil {
 		t.Fatal("WithDefaultPipeline(nil) must fail")
@@ -258,13 +255,13 @@ func TestNewErrorHandlerSingleton(t *testing.T) {
 // exception.
 type panickingWriter struct{}
 
-func (panickingWriter) HandleWrite(handler.OutboundContext, handler.Message) {
+func (panickingWriter) HandleWrite(OutboundContext, Message) {
 	panic("boom from outbound")
 }
 
 // TestNodeContextWriteRecoversHandlerPanic: a panic inside an outbound
 // handler must not escape Write — it becomes a pipeline exception picked
-// up by the first inbound handler.
+// up by the first inbound
 func TestNodeContextWriteRecoversHandlerPanic(t *testing.T) {
 	p := newTestPipeline(t)
 	var events []string

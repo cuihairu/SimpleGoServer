@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	handlerImpl "github.com/cuihairu/simplegoserver/internal/handler"
+	"github.com/cuihairu/simplegoserver/pkg/handler"
 )
 
 // gatedConn is the server end of a protocol connection driven through a
@@ -82,7 +82,7 @@ func (g *gatedConn) SetWriteDeadline(time.Time) error { return nil }
 // pump does; closing the conn ends it.
 func pumpGatedConn(t *testing.T, ph *ProtocolHandler, conn *gatedConn) {
 	t.Helper()
-	pipeline := handlerImpl.NewPipeline(conn)
+	pipeline := handler.NewPipeline(conn)
 	_ = pipeline.AddLast(NewFrameCodec(), ph)
 	pumped := make(chan struct{})
 	go func() {
@@ -498,7 +498,7 @@ func TestResumeReplayReachesWireBeforeLivePublishes(t *testing.T) {
 		Cursors:  map[string]uint64{"order-topic": 1},
 	})))
 	conn2 := newGatedConn(resumeWire, "replay-me")
-	pipeline := handlerImpl.NewPipeline(conn2)
+	pipeline := handler.NewPipeline(conn2)
 	_ = pipeline.AddLast(NewFrameCodec(), ph)
 	pumped := make(chan struct{})
 	go func() {

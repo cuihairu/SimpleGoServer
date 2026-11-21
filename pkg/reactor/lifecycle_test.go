@@ -11,14 +11,14 @@ import (
 	"testing"
 	"time"
 
-	handlerImpl "github.com/cuihairu/simplegoserver/internal/handler"
+	"github.com/cuihairu/simplegoserver/pkg/handler"
 )
 
 // recordingEvents satisfies event.Listener while logging every callback
 // for assertions. The embedded ErrorHandler only completes the interface;
 // every method is overridden.
 type recordingEvents struct {
-	handlerImpl.ErrorHandler
+	handler.ErrorHandler
 	mu     sync.Mutex
 	events []string
 }

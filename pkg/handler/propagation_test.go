@@ -8,8 +8,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/cuihairu/simplegoserver/pkg/handler"
 )
 
 // exceptionRecorder stops the exception event at itself (the single-cast
@@ -20,7 +18,7 @@ type exceptionRecorder struct {
 	events *[]string
 }
 
-func (e *exceptionRecorder) HandleException(ctx handler.ExceptionContext, ex handler.Exception) {
+func (e *exceptionRecorder) HandleException(ctx ExceptionContext, ex Exception) {
 	*e.events = append(*e.events, e.name)
 }
 
@@ -31,11 +29,11 @@ type lifecycleRecorder struct {
 	events *[]string
 }
 
-func (l *lifecycleRecorder) HandleActive(ctx handler.ActiveContext) {
+func (l *lifecycleRecorder) HandleActive(ctx ActiveContext) {
 	*l.events = append(*l.events, "active:"+l.name)
 }
 
-func (l *lifecycleRecorder) HandleInactive(ctx handler.InactiveContext, ex handler.Exception) {
+func (l *lifecycleRecorder) HandleInactive(ctx InactiveContext, ex Exception) {
 	*l.events = append(*l.events, "inactive:"+l.name)
 }
 
@@ -49,7 +47,7 @@ func TestPipelineAddHandlerAtPositionZero(t *testing.T) {
 	// which IsValidHandlers rejected — AddHandler(0, ...) always panicked
 	p.AddHandler(0, x)
 
-	isX := func(h handler.Handler) bool { return h == handler.Handler(x) }
+	isX := func(h Handler) bool { return h == Handler(x) }
 	if got := p.IndexOf(isX); got != 1 {
 		t.Fatalf("IndexOf(x) = %d, want 1 (right after the head sentinel)", got)
 	}
@@ -65,7 +63,7 @@ func TestPipelineAddHandlerAtTailPosition(t *testing.T) {
 	p.AddLast(a)
 	x := &readRecorder{name: "x"}
 	p.AddHandler(p.Size(), x) // == AddLast
-	isX := func(h handler.Handler) bool { return h == handler.Handler(x) }
+	isX := func(h Handler) bool { return h == Handler(x) }
 	if got := p.LastIndexOf(isX); got != p.Size()-2 {
 		t.Fatalf("LastIndexOf(x) = %d, want %d (before the tail sentinel)", got, p.Size()-2)
 	}
@@ -215,7 +213,7 @@ func TestHeadHandlerWriteMessageTypes(t *testing.T) {
 		}()
 		return ch
 	}
-	writeAndExpect := func(t *testing.T, msg handler.Message, n int, want string) {
+	writeAndExpect := func(t *testing.T, msg Message, n int, want string) {
 		t.Helper()
 		ch := startRead(n)
 		p.FireWrite(msg)

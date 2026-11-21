@@ -2,7 +2,6 @@ package handler
 
 import (
 	"errors"
-	"github.com/cuihairu/simplegoserver/pkg/handler"
 	"net"
 )
 
@@ -13,7 +12,7 @@ type LinkedPipeline struct {
 	size int
 }
 
-func (p *LinkedPipeline) IndexOf(f func(handler.Handler) bool) int {
+func (p *LinkedPipeline) IndexOf(f func(Handler) bool) int {
 	cur := p.head
 	for i := 0; ; i++ {
 		if f(cur.handler) {
@@ -28,7 +27,7 @@ func (p *LinkedPipeline) IndexOf(f func(handler.Handler) bool) int {
 
 // LastIndexOf scans from the tail back towards the head, returning the
 // node's index in the same index space IndexOf uses (head = 0).
-func (p *LinkedPipeline) LastIndexOf(f func(handler.Handler) bool) int {
+func (p *LinkedPipeline) LastIndexOf(f func(Handler) bool) int {
 	cur := p.tail
 	for i := p.size - 1; ; i-- {
 		if f(cur.handler) {
@@ -41,7 +40,7 @@ func (p *LinkedPipeline) LastIndexOf(f func(handler.Handler) bool) int {
 	return -1
 }
 
-func (p *LinkedPipeline) ContextAt(position int) handler.Context {
+func (p *LinkedPipeline) ContextAt(position int) Context {
 	if position < 0 || position >= p.size {
 		return nil
 	}
@@ -55,9 +54,9 @@ func (p *LinkedPipeline) ContextAt(position int) handler.Context {
 	return node
 }
 
-var _ handler.Pipeline = (*LinkedPipeline)(nil)
+var _ Pipeline = (*LinkedPipeline)(nil)
 
-func WithDefaultPipeline(p handler.Pipeline) error {
+func WithDefaultPipeline(p Pipeline) error {
 	if p == nil {
 		return errors.New("pipeline is nil")
 	}
@@ -85,15 +84,15 @@ func (p *LinkedPipeline) Conn() net.Conn {
 	return p.conn
 }
 
-func (p *LinkedPipeline) addFirst(handler handler.Handler) *LinkedPipeline {
+func (p *LinkedPipeline) addFirst(handler Handler) *LinkedPipeline {
 	oldNext := p.head.next
 	p.head.next = NewNodeContext(p, handler, p.head, oldNext)
 	oldNext.prev = p.head.next
 	p.size++
 	return p
 }
-func (p *LinkedPipeline) AddFirst(handlers ...handler.Handler) handler.Pipeline {
-	if !handler.IsValidHandlers(handlers...) {
+func (p *LinkedPipeline) AddFirst(handlers ...Handler) Pipeline {
+	if !IsValidHandlers(handlers...) {
 		panic("invalid handler")
 	}
 	for _, h := range handlers {
@@ -102,7 +101,7 @@ func (p *LinkedPipeline) AddFirst(handlers ...handler.Handler) handler.Pipeline 
 	return p
 }
 
-func (p *LinkedPipeline) addLast(h handler.Handler) *LinkedPipeline {
+func (p *LinkedPipeline) addLast(h Handler) *LinkedPipeline {
 	oldPrev := p.tail.prev
 	p.tail.prev = NewNodeContext(p, h, oldPrev, p.tail)
 	oldPrev.next = p.tail.prev
@@ -110,8 +109,8 @@ func (p *LinkedPipeline) addLast(h handler.Handler) *LinkedPipeline {
 	return p
 }
 
-func (p *LinkedPipeline) AddLast(handlers ...handler.Handler) handler.Pipeline {
-	if !handler.IsValidHandlers(handlers...) {
+func (p *LinkedPipeline) AddLast(handlers ...Handler) Pipeline {
+	if !IsValidHandlers(handlers...) {
 		panic("invalid handler")
 	}
 	for _, h := range handlers {
@@ -120,8 +119,8 @@ func (p *LinkedPipeline) AddLast(handlers ...handler.Handler) handler.Pipeline {
 	return p
 }
 
-func (p *LinkedPipeline) AddHandler(position int, handlers ...handler.Handler) handler.Pipeline {
-	if !handler.IsValidHandlers(handlers...) {
+func (p *LinkedPipeline) AddHandler(position int, handlers ...Handler) Pipeline {
+	if !IsValidHandlers(handlers...) {
 		panic("invalid handler")
 	}
 	if (position < 0) || (position > p.size) {
@@ -157,18 +156,18 @@ func (p *LinkedPipeline) FireActive() {
 	p.head.HandleActive()
 }
 
-func (p *LinkedPipeline) FireRead(message handler.Message) {
+func (p *LinkedPipeline) FireRead(message Message) {
 	p.head.HandleRead(message)
 }
 
-func (p *LinkedPipeline) FireWrite(message handler.Message) {
+func (p *LinkedPipeline) FireWrite(message Message) {
 	p.tail.HandleWrite(message)
 }
 
-func (p *LinkedPipeline) FireException(ex handler.Exception) {
+func (p *LinkedPipeline) FireException(ex Exception) {
 	p.head.HandleException(ex)
 }
 
-func (p *LinkedPipeline) FireInactive(ex handler.Exception) {
+func (p *LinkedPipeline) FireInactive(ex Exception) {
 	p.head.HandleInactive(ex)
 }

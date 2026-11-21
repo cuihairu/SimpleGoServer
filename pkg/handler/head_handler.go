@@ -3,7 +3,6 @@ package handler
 import (
 	"bytes"
 	"fmt"
-	"github.com/cuihairu/simplegoserver/pkg/handler"
 	"github.com/cuihairu/simplegoserver/pkg/utils"
 	"io"
 	"sync"
@@ -28,7 +27,7 @@ type Buffer interface {
 	Bytes() []byte
 }
 
-func (h HeadHandler) HandleWrite(ctx handler.OutboundContext, message handler.Message) {
+func (h HeadHandler) HandleWrite(ctx OutboundContext, message Message) {
 	switch m := message.(type) {
 	case []byte:
 		utils.AssertWriteLength(ctx.Conn().Write(m))
@@ -49,4 +48,4 @@ func (h HeadHandler) HandleWrite(ctx handler.OutboundContext, message handler.Me
 	}
 }
 
-var _ handler.OutboundHandler = (*HeadHandler)(nil)
+var _ OutboundHandler = (*HeadHandler)(nil)
